@@ -3,7 +3,7 @@
 .itrack-panel {
   position: fixed;
   top: 0;
-  right: 0;
+  right: 20px;
   width: 340px;
   max-width: 92vw;
   height: 100vh;
@@ -167,7 +167,7 @@
 .itrack-section-title {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: #ffffff;
+  color: #111827; /* changed from #ffffff to black */
   margin: 0 0 8px 0;
   text-align: left;
   display: block;
