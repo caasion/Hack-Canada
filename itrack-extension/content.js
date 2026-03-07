@@ -9,40 +9,58 @@
 const MOCK_RECOMMENDED = [
     {
         id: "rec-1",
-        name: "Nike Pegasus",
-        shortDescription: "running shoes",
-        imageUrl: "https://placehold.co/120x120/1a1a1a/eee?text=Shoe",
+        name: "Pegasus Runner",
+        shortDescription: "Lightweight road-running shoe",
+        imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=280&h=280&fit=crop",
         price: "$120",
         url: "https://www.nike.com/example",
         kind: "recommended",
     },
     {
         id: "rec-2",
-        name: "Wireless Earbuds",
-        shortDescription: "wireless earbuds",
-        imageUrl: "https://placehold.co/120x120/1a1a1a/eee?text=Earbuds",
-        price: "$49",
-        url: "https://example.com/earbuds",
+        name: "Studio Headphones",
+        shortDescription: "Noise-cancelling over-ear",
+        imageUrl: "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=280&h=280&fit=crop",
+        price: "$349",
+        url: "https://example.com/headphones",
+        kind: "recommended",
+    },
+    {
+        id: "rec-3",
+        name: "Everyday Tote",
+        shortDescription: "Soft leather carry-all",
+        imageUrl: "https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=280&h=280&fit=crop",
+        price: "$245",
+        url: "https://example.com/tote",
         kind: "recommended",
     },
 ];
 const MOCK_ALL = [
     {
         id: "all-1",
-        name: "T-shirt",
-        shortDescription: "cotton t-shirt",
-        imageUrl: "https://placehold.co/120x120/1a1a1a/eee?text=T-shirt",
+        name: "Classic Tee",
+        shortDescription: "Organic cotton, relaxed fit",
+        imageUrl: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=280&h=280&fit=crop",
         price: "$25",
         url: "https://example.com/tshirt",
         kind: "all",
     },
     {
         id: "all-2",
-        name: "Backpack",
-        shortDescription: "daypack backpack",
-        imageUrl: "https://placehold.co/120x120/1a1a1a/eee?text=Bag",
-        price: "$65",
+        name: "Daypack",
+        shortDescription: "Minimal everyday backpack",
+        imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=280&h=280&fit=crop",
+        price: "$89",
         url: "https://example.com/backpack",
+        kind: "all",
+    },
+    {
+        id: "all-3",
+        name: "Smart Water Bottle",
+        shortDescription: "Tracks intake, glows on schedule",
+        imageUrl: "https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=280&h=280&fit=crop",
+        price: "$59",
+        url: "https://example.com/bottle",
         kind: "all",
     },
 ];
@@ -100,6 +118,11 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+function attachImageFallback(img) {
+    img.addEventListener("error", () => {
+        img.src = "https://placehold.co/280x280/111827/F9FAFB?text=Product";
+    }, { once: true });
+}
 function renderTile(container, product, onSelect) {
     const tile = document.createElement("div");
     tile.className = "itrack-tile";
@@ -113,10 +136,12 @@ function renderTile(container, product, onSelect) {
       <span class="itrack-tile-name">${escapeHtml(product.name)}</span>${priceHtml}
     </div>
   `;
+  const thumbImg = tile.querySelector("img");
+  if (thumbImg) attachImageFallback(thumbImg);
   tile.addEventListener("click", () => {
     onSelect(product);
   });
-    container.appendChild(tile);
+  container.appendChild(tile);
 }
 function createExpandedView(panel) {
     const wrap = document.createElement("div");
@@ -146,6 +171,8 @@ function showExpanded(container, product) {
     ${priceHtml}
     <a class="itrack-expanded-link" href="${escapeHtml(product.url)}" target="_blank" rel="noopener noreferrer">Open product</a>
   `;
+    const expandedImg = container.querySelector("img");
+    if (expandedImg) attachImageFallback(expandedImg);
     const wrap = container.closest(".itrack-expanded-wrap");
     if (wrap)
         wrap.classList.remove("itrack-expanded-hidden");
@@ -156,7 +183,7 @@ function createReopenPill() {
     const pill = document.createElement("button");
     pill.id = REOPEN_ID;
     pill.type = "button";
-    pill.className = "itrack-reopen-pill";
+    pill.className = "itrack-reopen-pill itrack-reopen-hidden";
     pill.setAttribute("aria-label", "Open iTrack panel");
     pill.textContent = "iTrack";
     pill.addEventListener("click", () => {

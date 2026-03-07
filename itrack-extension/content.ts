@@ -200,6 +200,7 @@ function showExpanded(container: HTMLElement, product: Product): void {
     <h3 class="itrack-expanded-name">${escapeHtml(product.name)}</h3>
     <p class="itrack-expanded-desc">${escapeHtml(product.shortDescription)}</p>
     ${priceHtml}
+    <a class="itrack-expanded-link" href="${escapeHtml(product.url)}" target="_blank" rel="noopener noreferrer">Open product</a>
   `;
   const expandedImg = container.querySelector("img") as HTMLImageElement | null;
   if (expandedImg) attachImageFallback(expandedImg);
