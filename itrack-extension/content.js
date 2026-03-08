@@ -225,6 +225,47 @@ function createGazeControls(parent) {
     });
     parent.appendChild(bar);
 }
+function createImageUploadControl(parent) {
+    if (document.getElementById("imageFile"))
+        return;
+    const row = document.createElement("div");
+    row.style.cssText = [
+        "display:flex",
+        "align-items:center",
+        "gap:8px",
+        "margin:8px 0 12px",
+    ].join(";");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Upload image";
+    button.style.cssText = [
+        "padding:6px 10px",
+        "border-radius:8px",
+        "border:1px solid rgba(255,255,255,0.25)",
+        "background:rgba(255,255,255,0.1)",
+        "color:#fff",
+        "cursor:pointer",
+        "font-size:12px",
+    ].join(";");
+    const helper = document.createElement("span");
+    helper.textContent = "Direct upload -> base64 -> /dwell";
+    helper.style.cssText = "font-size:11px; opacity:0.75;";
+    const status = document.createElement("span");
+    status.id = "itrack-upload-status";
+    status.textContent = "Idle";
+    status.style.cssText = "font-size:11px; opacity:0.9;";
+    const input = document.createElement("input");
+    input.id = "imageFile";
+    input.type = "file";
+    input.accept = "image/*";
+    input.style.display = "none";
+    button.addEventListener("click", () => input.click());
+    row.appendChild(button);
+    row.appendChild(helper);
+    row.appendChild(status);
+    row.appendChild(input);
+    parent.appendChild(row);
+}
 function createPanel() {
     removeInstagramUI();
     const panel = getOrCreatePanel();
@@ -233,6 +274,7 @@ function createPanel() {
     content.className = "itrack-content";
     panel.appendChild(content);
     createGazeControls(content);
+    createImageUploadControl(content);
     createSection(content, "Recommended products", MOCK_RECOMMENDED, "itrack-recommended-tiles");
     createSection(content, "All products", MOCK_ALL, "itrack-all-tiles");
     createReopenPill();
@@ -371,6 +413,7 @@ function init() {
     createPanel();
     injectGazeDot();
     injectGazeIframe();
+    watchForImageInput();
     window.addEventListener("message", handleGazeMessage);
 }
 if (document.readyState === "loading") {
@@ -389,4 +432,286 @@ window.addEventListener("itrack-products", ((e) => {
     allContainer.innerHTML = "";
     recommended.forEach(p => renderTile(recContainer, p));
     all.forEach(p => renderTile(allContainer, p));
+}));
+const DEFAULT_CLOUDINARY_CLOUD_NAME = "";
+const DEFAULT_CLOUDINARY_UPLOAD_PRESET = "";
+const DEFAULT_DWELL_BACKEND_BASE_URL = "http://127.0.0.1:8000";
+const DEFAULT_DWELL_USER_ID = "frontend-test-user";
+const DEFAULT_DWELL_DURATION_MS = 2400;
+const BACKEND_CONFIG_CACHE_MS = 60000;
+// Optional runtime override:
+// window.ITRACK_RUNTIME_CONFIG = {
+//   cloudinaryCloudName: "your_cloud_name",
+//   cloudinaryUploadPreset: "your_unsigned_preset",
+//   dwellBackendBaseUrl: "http://127.0.0.1:8000",
+//   userId: "frontend-test-user",
+//   dwellDurationMs: 2400,
+// };
+const format = (value) => JSON.stringify(value, null, 2);
+let backendConfigCache;
+function setUploadStatus(text) {
+    const statusEl = document.getElementById("itrack-upload-status");
+    if (statusEl)
+        statusEl.textContent = text;
+}
+function getWindowPipelineConfig() {
+    var _a, _b, _c, _d, _e;
+    const runtimeConfig = ((_a = globalThis.ITRACK_RUNTIME_CONFIG) !== null && _a !== void 0 ? _a : {});
+    return {
+        cloudinaryCloudName: (_b = runtimeConfig.cloudinaryCloudName) !== null && _b !== void 0 ? _b : DEFAULT_CLOUDINARY_CLOUD_NAME,
+        cloudinaryUploadPreset: (_c = runtimeConfig.cloudinaryUploadPreset) !== null && _c !== void 0 ? _c : DEFAULT_CLOUDINARY_UPLOAD_PRESET,
+        dwellBackendBaseUrl: (_d = runtimeConfig.dwellBackendBaseUrl) !== null && _d !== void 0 ? _d : DEFAULT_DWELL_BACKEND_BASE_URL,
+        userId: (_e = runtimeConfig.userId) !== null && _e !== void 0 ? _e : DEFAULT_DWELL_USER_ID,
+        dwellDurationMs: typeof runtimeConfig.dwellDurationMs === "number"
+            ? runtimeConfig.dwellDurationMs
+            : DEFAULT_DWELL_DURATION_MS,
+    };
+}
+async function requestViaProxyOrDirect(request) {
+    var _a, _b, _c;
+    const runtime = (_a = globalThis.browser) === null || _a === void 0 ? void 0 : _a.runtime;
+    if (runtime === null || runtime === void 0 ? void 0 : runtime.sendMessage) {
+        try {
+            const raw = (await runtime.sendMessage({
+                type: "ITRACK_PROXY_FETCH",
+                request,
+            }));
+            if (raw && typeof raw.status === "number") {
+                return {
+                    ok: Boolean(raw.ok),
+                    status: raw.status,
+                    statusText: String((_b = raw.statusText) !== null && _b !== void 0 ? _b : ""),
+                    text: String((_c = raw.bodyText) !== null && _c !== void 0 ? _c : ""),
+                    transport: "proxy",
+                };
+            }
+        }
+        catch (proxyError) {
+            console.warn("[iTrack] proxy request failed, using direct fetch", proxyError);
+        }
+    }
+    const response = await fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+    });
+    return {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        text: await response.text(),
+        transport: "direct",
+    };
+}
+async function fetchBackendClientConfig(dwellBackendBaseUrl) {
+    const baseUrl = dwellBackendBaseUrl.replace(/\/+$/, "");
+    if (backendConfigCache &&
+        backendConfigCache.baseUrl === baseUrl &&
+        Date.now() < backendConfigCache.expiresAt) {
+        return backendConfigCache.config;
+    }
+    const endpoint = `${baseUrl}/runtime/client-config`;
+    const result = await requestViaProxyOrDirect({ url: endpoint, method: "GET" });
+    if (!result.ok) {
+        console.warn("[iTrack] backend client config request failed", {
+            endpoint,
+            status: result.status,
+            statusText: result.statusText,
+            transport: result.transport,
+        });
+        return {};
+    }
+    try {
+        const payload = JSON.parse(result.text);
+        const config = {
+            cloudinaryCloudName: typeof payload.cloudinary_cloud_name === "string" ? payload.cloudinary_cloud_name : "",
+            cloudinaryUploadPreset: typeof payload.cloudinary_upload_preset === "string" ? payload.cloudinary_upload_preset : "",
+        };
+        backendConfigCache = {
+            baseUrl,
+            expiresAt: Date.now() + BACKEND_CONFIG_CACHE_MS,
+            config,
+        };
+        console.log("[iTrack] loaded backend client config", {
+            endpoint,
+            transport: result.transport,
+            cloudinaryDirectUploadEnabled: Boolean(config.cloudinaryCloudName && config.cloudinaryUploadPreset),
+        });
+        return config;
+    }
+    catch {
+        console.warn("[iTrack] backend client config parse failed", {
+            endpoint,
+            transport: result.transport,
+        });
+        return {};
+    }
+}
+async function resolvePipelineConfig() {
+    const windowConfig = getWindowPipelineConfig();
+    if (windowConfig.cloudinaryCloudName && windowConfig.cloudinaryUploadPreset) {
+        return windowConfig;
+    }
+    const backendConfig = await fetchBackendClientConfig(windowConfig.dwellBackendBaseUrl);
+    return {
+        ...windowConfig,
+        cloudinaryCloudName: windowConfig.cloudinaryCloudName || backendConfig.cloudinaryCloudName || "",
+        cloudinaryUploadPreset: windowConfig.cloudinaryUploadPreset || backendConfig.cloudinaryUploadPreset || "",
+    };
+}
+const asBase64 = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+        var _a;
+        const result = String((_a = reader.result) !== null && _a !== void 0 ? _a : "");
+        const base64 = result.includes(",") ? result.split(",")[1] : "";
+        resolve(base64);
+    };
+    reader.onerror = () => { var _a; return reject((_a = reader.error) !== null && _a !== void 0 ? _a : new Error("Blob read failed")); };
+    reader.readAsDataURL(blob);
+});
+async function uploadImageToCloudinary(file, config) {
+    var _a;
+    if (!config.cloudinaryCloudName || !config.cloudinaryUploadPreset) {
+        throw new Error("Missing Cloudinary config. Set window.ITRACK_RUNTIME_CONFIG.cloudinaryCloudName and .cloudinaryUploadPreset.");
+    }
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("upload_preset", config.cloudinaryUploadPreset);
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudinaryCloudName)}/image/upload`, { method: "POST", body: formData });
+    const payload = (await response.json());
+    const cloudinaryError = typeof payload.error === "string" ? payload.error : (_a = payload.error) === null || _a === void 0 ? void 0 : _a.message;
+    if (!response.ok || !payload.secure_url || !payload.public_id) {
+        throw new Error(`Cloudinary upload failed (${response.status} ${response.statusText}): ${cloudinaryError !== null && cloudinaryError !== void 0 ? cloudinaryError : "invalid response"}`);
+    }
+    return { secureUrl: payload.secure_url, publicId: payload.public_id };
+}
+async function cloudinaryUrlToBase64(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch uploaded Cloudinary image (${response.status} ${response.statusText})`);
+    }
+    const blob = await response.blob();
+    return asBase64(blob);
+}
+async function processImageForDwell(file) {
+    var _a;
+    const config = await resolvePipelineConfig();
+    let screenshotB64 = "";
+    let screenshotUrl;
+    let screenshotPublicId;
+    if (config.cloudinaryCloudName && config.cloudinaryUploadPreset) {
+        setUploadStatus("Uploading to Cloudinary...");
+        const uploaded = await uploadImageToCloudinary(file, config);
+        screenshotUrl = uploaded.secureUrl;
+        screenshotPublicId = uploaded.publicId;
+        screenshotB64 = await cloudinaryUrlToBase64(uploaded.secureUrl);
+        console.log("[iTrack] cloudinary upload method", {
+            method: "browser_unsigned_direct_file",
+            secureUrl: screenshotUrl,
+            publicId: screenshotPublicId,
+        });
+    }
+    else {
+        // Fallback so backend-side Cloudinary upload can still run in /dwell.
+        setUploadStatus("Cloudinary config missing, sending base64...");
+        screenshotB64 = await asBase64(file);
+        console.log("[iTrack] cloudinary upload method", {
+            method: "local_base64_fallback",
+            reason: "missing cloudinaryCloudName or cloudinaryUploadPreset",
+        });
+    }
+    if (!screenshotB64) {
+        throw new Error("Image conversion to base64 failed.");
+    }
+    const body = {
+        user_id: config.userId,
+        dwell_duration_ms: config.dwellDurationMs,
+        page_url: window.location.href,
+        page_title: document.title,
+        screenshot_b64: screenshotB64,
+        screenshot_url: screenshotUrl,
+        screenshot_public_id: screenshotPublicId,
+    };
+    console.log("[iTrack] sending /dwell", {
+        endpoint: `${config.dwellBackendBaseUrl}/dwell`,
+        userId: body.user_id,
+        dwellDurationMs: body.dwell_duration_ms,
+        hasScreenshotB64: Boolean(body.screenshot_b64),
+        screenshotB64Length: body.screenshot_b64.length,
+        screenshotUrl: (_a = body.screenshot_url) !== null && _a !== void 0 ? _a : null,
+    });
+    const endpoint = `${config.dwellBackendBaseUrl}/dwell`;
+    const requestBody = JSON.stringify(body);
+    setUploadStatus("Sending to backend...");
+    const result = await requestViaProxyOrDirect({
+        url: endpoint,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: requestBody,
+    });
+    console.log("[iTrack] /dwell transport", {
+        transport: result.transport,
+        status: result.status,
+        statusText: result.statusText,
+    });
+    let parsed = null;
+    if (result.text) {
+        try {
+            parsed = JSON.parse(result.text);
+        }
+        catch {
+            parsed = result.text;
+        }
+    }
+    if (!result.ok) {
+        throw new Error(`Request failed: ${result.status} ${result.statusText}`);
+    }
+    return parsed;
+}
+async function handleImageFile(file) {
+    setUploadStatus("Sending...");
+    try {
+        const parsed = await processImageForDwell(file);
+        console.log("[iTrack] dwell workflow response", format(parsed));
+        setUploadStatus(`Success ${new Date().toLocaleTimeString()}`);
+    }
+    catch (error) {
+        console.error("[iTrack] dwell workflow error", format({ error: String(error) }));
+        setUploadStatus("Error");
+    }
+}
+function bindImageInput() {
+    const fileInput = document.getElementById("imageFile");
+    if (!(fileInput instanceof HTMLInputElement))
+        return;
+    if (fileInput.dataset.itrackBound === "true")
+        return;
+    fileInput.dataset.itrackBound = "true";
+    fileInput.addEventListener("change", () => {
+        var _a;
+        const file = (_a = fileInput.files) === null || _a === void 0 ? void 0 : _a[0];
+        if (!file)
+            return;
+        console.log("[iTrack] upload selected", {
+            name: file.name,
+            size: file.size,
+            type: file.type,
+        });
+        void handleImageFile(file);
+    });
+}
+function watchForImageInput() {
+    bindImageInput();
+    const observer = new MutationObserver(() => bindImageInput());
+    observer.observe(document.body, { childList: true, subtree: true });
+}
+window.addEventListener("itrack-process-image", ((e) => {
+    var _a;
+    const file = (_a = e.detail) === null || _a === void 0 ? void 0 : _a.file;
+    if (!(file instanceof File)) {
+        console.warn("[iTrack] itrack-process-image event missing detail.file");
+        return;
+    }
+    void handleImageFile(file);
 }));
