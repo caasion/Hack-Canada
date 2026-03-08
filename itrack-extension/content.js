@@ -104,10 +104,6 @@ function updateDevActionsVisibility() {
 function setGazeMode(mode) {
     var _a;
     gazeMode = mode;
-    // Update active-button highlight
-    document.querySelectorAll(".itrack-gaze-btn").forEach(btn => {
-        btn.classList.toggle("itrack-gaze-btn--active", btn.dataset.mode === mode);
-    });
     // Show the native gaze dot only in dev mode.
     showGazeDot(mode === "dev");
     syncAnchorBoxVisibility();
@@ -137,6 +133,31 @@ function setGazeMode(mode) {
     }
     // Tell the iframe so it can show/hide the cursor and set background colour
     (_a = iframe.contentWindow) === null || _a === void 0 ? void 0 : _a.postMessage({ type: "ITRACK_SET_MODE", mode }, "*");
+}
+// ---------------------------------------------------------------------------
+// Extension messaging – allow popup to get/set gaze mode
+// ---------------------------------------------------------------------------
+const itrackRuntime = (globalThis.browser && globalThis.browser.runtime) ||
+    (globalThis.chrome && globalThis.chrome.runtime) ||
+    null;
+if (itrackRuntime === null || itrackRuntime === void 0 ? void 0 : itrackRuntime.onMessage.addListener) {
+    itrackRuntime.onMessage.addListener((message) => {
+        if (!message || typeof message.type !== "string") {
+            return undefined;
+        }
+        if (message.type === "ITRACK_GET_MODE") {
+            return Promise.resolve({ mode: gazeMode });
+        }
+        if (message.type === "ITRACK_SET_MODE") {
+            const mode = message.mode;
+            if (mode === "calibration" || mode === "dev" || mode === "normal") {
+                setGazeMode(mode);
+                return Promise.resolve({ ok: true });
+            }
+            return Promise.resolve({ ok: false, error: "INVALID_MODE" });
+        }
+        return undefined;
+    });
 }
 const autoCapture = {
     enabled: true,
@@ -503,26 +524,6 @@ function createReopenPill() {
     });
     document.body.appendChild(pill);
 }
-function createGazeControls(parent) {
-    const bar = document.createElement("div");
-    bar.className = "itrack-gaze-controls";
-    const modes = [
-        { mode: "calibration", label: "Calibrate", title: "Show calibration overlay" },
-        { mode: "dev", label: "Dev", title: "Show gaze cursor (transparent)" },
-        { mode: "normal", label: "Normal", title: "Run tracking silently" },
-    ];
-    modes.forEach(({ mode, label, title }) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "itrack-gaze-btn" + (mode === gazeMode ? " itrack-gaze-btn--active" : "");
-        btn.dataset.mode = mode;
-        btn.textContent = label;
-        btn.title = title;
-        btn.addEventListener("click", () => setGazeMode(mode));
-        bar.appendChild(btn);
-    });
-    parent.appendChild(bar);
-}
 function createImageUploadControl(parent) {
     if (document.getElementById("imageFile"))
         return;
@@ -612,7 +613,6 @@ function createPanel() {
     createImageUploadControl(actionsRow);
     createAutoCaptureControl(actionsRow);
     updateDevActionsVisibility();
-    createGazeControls(content);
     createPanelIframe(content);
     updateProductSectionVisibility();
     createReopenPill();
