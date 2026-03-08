@@ -32,8 +32,8 @@ const MOCK_ALL: Product[] = [
   { id: "all-3", name: "Smart Water Bottle", shortDescription: "Tracks intake, glows on schedule", imageUrl: "https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=280&h=280&fit=crop", price: "$59", url: "https://example.com/smart-bottle", kind: "all" },
 ];
 
-const PANEL_ID    = "itrack-panel";
-const REOPEN_ID   = "itrack-reopen-pill";
+const PANEL_ID       = "itrack-panel";
+const REOPEN_ID      = "itrack-reopen-pill";
 const GAZE_IFRAME_ID = "itrack-gaze-iframe";
 
 /** Replace with your real API endpoint. */
@@ -41,6 +41,51 @@ const GAZE_API_ENDPOINT = "http://localhost:3000/api/gaze";
 
 /** Milliseconds a gaze must stay on a tile before the POST fires. */
 const DWELL_THRESHOLD_MS = 1500;
+
+// ---------------------------------------------------------------------------
+// Gaze mode
+// ---------------------------------------------------------------------------
+type GazeMode = "calibration" | "dev" | "normal";
+
+let gazeMode: GazeMode = "normal";
+
+/**
+ * calibration – white overlay, pointer-events active so calibration UI is
+ *               interactive; eye tracking cursor + calibration dots visible.
+ * dev          – transparent overlay, gaze cursor visible; useful for debugging
+ *               hit zones without covering the page.
+ * normal       – iframe invisible (opacity 0); tracking runs silently in the
+ *               background, dwell POSTs still fire.
+ */
+function setGazeMode(mode: GazeMode): void {
+  gazeMode = mode;
+
+  // Update active-button highlight
+  document.querySelectorAll<HTMLButtonElement>(".itrack-gaze-btn").forEach(btn => {
+    btn.classList.toggle("itrack-gaze-btn--active", btn.dataset.mode === mode);
+  });
+
+  const iframe = document.getElementById(GAZE_IFRAME_ID) as HTMLIFrameElement | null;
+  if (!iframe) return;
+
+  switch (mode) {
+    case "calibration":
+      iframe.style.opacity       = "1";
+      iframe.style.pointerEvents = "auto";   // needed for EyeGesturesLite calibration UI
+      break;
+    case "dev":
+      iframe.style.opacity       = "1";
+      iframe.style.pointerEvents = "none";   // passthrough — no interaction needed
+      break;
+    case "normal":
+      iframe.style.opacity       = "1";      // transparent body handles invisibility
+      iframe.style.pointerEvents = "none";
+      break;
+  }
+
+  // Tell the iframe so it can show/hide the cursor and set background colour
+  iframe.contentWindow?.postMessage({ type: "ITRACK_SET_MODE", mode }, "*");
+}
 
 // ---------------------------------------------------------------------------
 // Dwell state
@@ -151,6 +196,30 @@ function createReopenPill(): void {
   document.body.appendChild(pill);
 }
 
+function createGazeControls(parent: HTMLElement): void {
+  const bar = document.createElement("div");
+  bar.className = "itrack-gaze-controls";
+
+  const modes: { mode: GazeMode; label: string; title: string }[] = [
+    { mode: "calibration", label: "Calibrate", title: "Show calibration overlay" },
+    { mode: "dev",         label: "Dev",       title: "Show gaze cursor (transparent)" },
+    { mode: "normal",      label: "Normal",    title: "Run tracking silently" },
+  ];
+
+  modes.forEach(({ mode, label, title }) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "itrack-gaze-btn" + (mode === gazeMode ? " itrack-gaze-btn--active" : "");
+    btn.dataset.mode = mode;
+    btn.textContent  = label;
+    btn.title        = title;
+    btn.addEventListener("click", () => setGazeMode(mode));
+    bar.appendChild(btn);
+  });
+
+  parent.appendChild(bar);
+}
+
 function createPanel(): void {
   removeInstagramUI();
   const panel = getOrCreatePanel();
@@ -160,6 +229,7 @@ function createPanel(): void {
   content.className = "itrack-content";
   panel.appendChild(content);
 
+  createGazeControls(content);
   createSection(content, "Recommended products", MOCK_RECOMMENDED, "itrack-recommended-tiles");
   createSection(content, "All products", MOCK_ALL, "itrack-all-tiles");
 
@@ -177,6 +247,10 @@ function injectGazeIframe(): void {
   iframe.src = (globalThis as any).browser.runtime.getURL("gaze-page.html");
   // Zero-size, fully transparent – EyeGesturesLite renders its own overlay
   // inside the iframe's own document (moz-extension:// origin).
+  // allowTransparency makes the iframe surface genuinely transparent so the
+  // default white iframe background does not bleed through.
+  iframe.setAttribute("allowTransparency", "true");
+  // Start invisible (normal mode) — setGazeMode() can change this
   iframe.style.cssText = [
     "position:fixed",
     "top:0","left:0",
@@ -187,6 +261,8 @@ function injectGazeIframe(): void {
     `z-index:${2147483645}`,
     "opacity:1",
   ].join(";");
+  // Once loaded, apply the current mode (in case setGazeMode was called before load)
+  iframe.addEventListener("load", () => setGazeMode(gazeMode), { once: true });
   // Allow the iframe to use the camera
   iframe.allow = "camera";
   document.body.appendChild(iframe);
