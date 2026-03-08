@@ -50,7 +50,7 @@ const dwellRoutes: FastifyPluginAsync = async (fastify) => {
               fastify.log.warn({ err: error }, "[Pipeline] Gemini identify/update failed");
             });
 
-    let cat1Product: ProductCandidate;
+    let cat1Product: ProductCandidate | null;
     let cat2Picks: ProductCandidate[];
 
     try {
@@ -63,7 +63,7 @@ const dwellRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     fastify.log.info("[Pipeline] Transforming product images in parallel");
-    const allProducts = [cat1Product, ...cat2Picks];
+    const allProducts = [...(cat1Product ? [cat1Product] : []), ...cat2Picks];
     const urls = await Promise.all(
       allProducts.map((product) => cloudinaryService.transformProductImage(product.image_url)),
     );

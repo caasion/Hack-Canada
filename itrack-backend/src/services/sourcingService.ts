@@ -186,10 +186,10 @@ const toProduct = (
 export const sourceCat1 = async (
   screenshotB64: string,
   screenshotUrl?: string,
-): Promise<ProductCandidate> => {
+): Promise<ProductCandidate | null> => {
   if (settings.PRODUCT_SOURCING_MODE === "hardcoded") {
-    console.info("[Sourcing][Cat1] Hardcoded mode enabled; returning catalog fallback");
-    return toProduct(HARDCODED_CATALOG[0], "hardcoded");
+    console.info("[Sourcing][Cat1] Hardcoded mode enabled; no catalog fallback");
+    return null;
   }
 
   let fallbackReason = "unknown";
@@ -254,8 +254,8 @@ export const sourceCat1 = async (
     }
   }
 
-  console.warn(`[Sourcing][Cat1] Returning hardcoded fallback (reason=${fallbackReason})`);
-  return toProduct(HARDCODED_CATALOG[0], "hardcoded");
+  console.warn(`[Sourcing][Cat1] No result available (reason=${fallbackReason}); returning null`);
+  return null;
 };
 
 export const sourceCat2 = async (
@@ -269,25 +269,13 @@ export const sourceCat2 = async (
   const topBrand = signals.brand_guess;
 
   if (settings.PRODUCT_SOURCING_MODE === "hardcoded") {
-    console.info("[Sourcing][Cat2] Hardcoded mode enabled; returning catalog fallback picks");
-    const scored = HARDCODED_CATALOG.map((candidate) => ({
-      candidate,
-      score: scoreCandidate(candidate, signals),
-    })).sort((a, b) => b.score - a.score);
-    return scored.slice(0, 3).map(({ candidate }, i) =>
-      toProduct(candidate, "hardcoded", baseConfidence * (1 - 0.05 * i)),
-    );
+    console.info("[Sourcing][Cat2] Hardcoded mode enabled; no catalog fallback picks");
+    return [];
   }
 
   if (!query) {
-    console.warn("[Sourcing][Cat2] Empty query from profile; returning hardcoded fallback picks");
-    const scored = HARDCODED_CATALOG.map((candidate) => ({
-      candidate,
-      score: scoreCandidate(candidate, signals),
-    })).sort((a, b) => b.score - a.score);
-    return scored.slice(0, 3).map(({ candidate }, i) =>
-      toProduct(candidate, "hardcoded", baseConfidence * (1 - 0.05 * i)),
-    );
+    console.warn("[Sourcing][Cat2] Empty query from profile; returning empty picks");
+    return [];
   }
 
   console.info(`[Sourcing][Cat2] Live shopping query: ${query}`);
@@ -340,12 +328,6 @@ export const sourceCat2 = async (
     }
   }
 
-  console.warn(`[Sourcing][Cat2] Returning hardcoded fallback picks (reason=${fallbackReason})`);
-  const scored = HARDCODED_CATALOG.map((candidate) => ({
-    candidate,
-    score: scoreCandidate(candidate, signals),
-  })).sort((a, b) => b.score - a.score);
-  return scored.slice(0, 3).map(({ candidate }, i) =>
-    toProduct(candidate, "hardcoded", baseConfidence * (1 - 0.05 * i)),
-  );
+  console.warn(`[Sourcing][Cat2] No results available (reason=${fallbackReason}); returning empty picks`);
+  return [];
 };
