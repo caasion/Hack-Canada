@@ -1,252 +1,141 @@
 "use strict";
-
 /**
- * iTrack Firefox extension – content script
- * Injects right-side product panel on Instagram
- * Clicking a product opens the product URL directly
+ * iTrack Firefox extension – content script.
+ * Injects a right-side panel on Instagram with Recommended products (top) and All products (bottom).
+ * Clicking a product tile redirects to its link immediately in a new tab.
+ * Removes Instagram Reels nav buttons, Messages toolbar, and floating buttons dynamically.
  */
-
+const MOCK_RECOMMENDED = [
+    { id: "rec-1", name: "Pegasus Runner", shortDescription: "Lightweight road-running shoe", imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=280&h=280&fit=crop", price: "$120", url: "https://example.com/pegasus-runner", kind: "recommended" },
+    { id: "rec-2", name: "Studio Headphones", shortDescription: "Noise-cancelling over-ear", imageUrl: "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=280&h=280&fit=crop", price: "$349", url: "https://example.com/studio-headphones", kind: "recommended" },
+    { id: "rec-3", name: "Everyday Tote", shortDescription: "Soft leather carry-all", imageUrl: "https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=280&h=280&fit=crop", price: "$245", url: "https://example.com/everyday-tote", kind: "recommended" },
+];
+const MOCK_ALL = [
+    { id: "all-1", name: "Classic Tee", shortDescription: "Organic cotton, relaxed fit", imageUrl: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=280&h=280&fit=crop", price: "$25", url: "https://example.com/classic-tee", kind: "all" },
+    { id: "all-2", name: "Daypack", shortDescription: "Minimal everyday backpack", imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=280&h=280&fit=crop", price: "$89", url: "https://example.com/daypack", kind: "all" },
+    { id: "all-3", name: "Smart Water Bottle", shortDescription: "Tracks intake, glows on schedule", imageUrl: "https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=280&h=280&fit=crop", price: "$59", url: "https://example.com/smart-bottle", kind: "all" },
+];
 const PANEL_ID = "itrack-panel";
 const REOPEN_ID = "itrack-reopen-pill";
-const RECOMMENDED_SECTION_ID = "itrack-recommended-section";
-
-/* ---------------- MOCK DATA ---------------- */
-
-const MOCK_RECOMMENDED = [
-  {
-    id: "rec-1",
-    name: "Pegasus Runner",
-    shortDescription: "Lightweight road-running shoe",
-    imageUrl:
-      "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=280&h=280&fit=crop",
-    price: "$120",
-    url: "https://www.nike.com",
-  },
-  {
-    id: "rec-2",
-    name: "Studio Headphones",
-    shortDescription: "Noise-cancelling over-ear",
-    imageUrl:
-      "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=280&h=280&fit=crop",
-    price: "$349",
-    url: "https://example.com/headphones",
-  },
-  {
-    id: "rec-3",
-    name: "Everyday Tote",
-    shortDescription: "Soft leather carry-all",
-    imageUrl:
-      "https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=280&h=280&fit=crop",
-    price: "$245",
-    url: "https://example.com/tote",
-  },
-];
-
-const MOCK_ALL = [
-  {
-    id: "all-1",
-    name: "Classic Tee",
-    shortDescription: "Organic cotton",
-    imageUrl:
-      "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=280&h=280&fit=crop",
-    price: "$25",
-    url: "https://example.com/tshirt",
-  },
-  {
-    id: "all-2",
-    name: "Daypack",
-    shortDescription: "Minimal backpack",
-    imageUrl:
-      "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=280&h=280&fit=crop",
-    price: "$89",
-    url: "https://example.com/backpack",
-  },
-  {
-    id: "all-3",
-    name: "Smart Bottle",
-    shortDescription: "Tracks hydration",
-    imageUrl:
-      "https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=280&h=280&fit=crop",
-    price: "$59",
-    url: "https://example.com/bottle",
-  },
-];
-
-/* ---------------- HELPERS ---------------- */
-
 function isInstagram() {
-  return window.location.hostname.includes("instagram.com");
+    return window.location.hostname.includes("instagram.com");
 }
-
-function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+function removeInstagramUI() {
+    document.querySelectorAll('div[aria-label*="Messages"]').forEach(el => el.remove());
+    document.querySelectorAll('div[role="button"] > div[data-visualcompletion="ignore"]').forEach(el => { var _a; return (_a = el.parentElement) === null || _a === void 0 ? void 0 : _a.remove(); });
+    const reelsNav = document.querySelector('div[aria-label="Reels navigation controls"]');
+    if (reelsNav)
+        reelsNav.remove();
+    const observer = new MutationObserver(() => {
+        document.querySelectorAll('div[aria-label*="Messages"]').forEach(el => el.remove());
+        document.querySelectorAll('div[role="button"] > div[data-visualcompletion="ignore"]').forEach(el => { var _a; return (_a = el.parentElement) === null || _a === void 0 ? void 0 : _a.remove(); });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => observer.disconnect(), 15000);
 }
-
-function attachImageFallback(img) {
-  img.addEventListener(
-    "error",
-    () => {
-      img.src = "https://placehold.co/280x280/111827/F9FAFB?text=Product";
-    },
-    { once: true }
-  );
-}
-
-/* ---------------- PANEL ---------------- */
-
 function getOrCreatePanel() {
-  let panel = document.getElementById(PANEL_ID);
-
-  if (panel) return panel;
-
-  panel = document.createElement("div");
-  panel.id = PANEL_ID;
-  panel.className = "itrack-panel";
-
-  document.body.appendChild(panel);
-
-  return panel;
+    let panel = document.getElementById(PANEL_ID);
+    if (!panel) {
+        panel = document.createElement("div");
+        panel.id = PANEL_ID;
+        panel.className = "itrack-panel";
+        document.body.appendChild(panel);
+    }
+    panel.innerHTML = "";
+    return panel;
 }
-
-/* ---------------- REOPEN PILL ---------------- */
-
-function createReopenPill() {
-  if (document.getElementById(REOPEN_ID)) return;
-
-  const pill = document.createElement("button");
-
-  pill.id = REOPEN_ID;
-  pill.className = "itrack-reopen-pill itrack-reopen-hidden";
-  pill.textContent = "iTrack";
-
-  pill.addEventListener("click", () => {
-    const panel = document.getElementById(PANEL_ID);
-
-    if (!panel) return;
-
-    panel.classList.remove("itrack-panel-hidden");
-
-    pill.classList.add("itrack-reopen-hidden");
-  });
-
-  document.body.appendChild(pill);
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
 }
-
-/* ---------------- SECTIONS ---------------- */
-
-function createSection(parent, title, id) {
-  const section = document.createElement("div");
-
-  section.className = "itrack-section";
-
-  section.innerHTML = `
-    <h2 class="itrack-section-title">${escapeHtml(title)}</h2>
-    <div id="${id}" class="itrack-tiles"></div>
-  `;
-
-  parent.appendChild(section);
-
-  return section.querySelector(".itrack-tiles");
+function attachImageFallback(img) {
+    img.addEventListener("error", () => {
+        img.src = "https://placehold.co/280x280/111827/F9FAFB?text=Product";
+    }, { once: true });
 }
-
-/* ---------------- PRODUCT TILE ---------------- */
-
+// Clicking tile now opens the product URL in a new tab
 function renderTile(container, product) {
-  const tile = document.createElement("div");
-
-  tile.className = "itrack-tile";
-
-  const price = product.price
-    ? `<span class="itrack-tile-price">${escapeHtml(product.price)}</span>`
-    : "";
-
-  tile.innerHTML = `
+    const tile = document.createElement("div");
+    tile.className = "itrack-tile";
+    tile.setAttribute("data-product-id", product.id);
+    const priceHtml = product.price ? ` <span class="itrack-tile-price">${escapeHtml(product.price)}</span>` : "";
+    tile.innerHTML = `
     <div class="itrack-tile-media">
-      <img src="${escapeHtml(product.imageUrl)}" width="56" height="56" loading="lazy"/>
+      <img src="${escapeHtml(product.imageUrl)}" alt="" width="56" height="56" loading="lazy" />
     </div>
-
     <div class="itrack-tile-body">
-      <span class="itrack-tile-name">${escapeHtml(product.name)}</span>
-      ${price}
+      <span class="itrack-tile-name">${escapeHtml(product.name)}</span>${priceHtml}
     </div>
   `;
-
-  const img = tile.querySelector("img");
-
-  if (img) attachImageFallback(img);
-
-  tile.addEventListener("click", () => {
-    window.open(product.url, "_blank");
-  });
-
-  container.appendChild(tile);
+    const img = tile.querySelector("img");
+    if (img)
+        attachImageFallback(img);
+    // Open product link on click
+    tile.addEventListener("click", () => {
+        window.open(product.url, "_blank");
+    });
+    container.appendChild(tile);
 }
-
-/* ---------------- CREATE PANEL ---------------- */
-
+function createSection(parent, title, products, containerId) {
+    const section = document.createElement("div");
+    section.className = "itrack-section";
+    section.innerHTML = `<h2 class="itrack-section-title">${escapeHtml(title)}</h2><div id="${containerId}" class="itrack-tiles"></div>`;
+    parent.appendChild(section);
+    const container = section.querySelector(`#${containerId}`);
+    products.forEach(p => renderTile(container, p));
+    return container;
+}
+function createReopenPill() {
+    if (document.getElementById(REOPEN_ID))
+        return;
+    const pill = document.createElement("button");
+    pill.id = REOPEN_ID;
+    pill.type = "button";
+    pill.className = "itrack-reopen-pill itrack-reopen-hidden";
+    pill.setAttribute("aria-label", "Open iTrack panel");
+    pill.textContent = "iTrack";
+    pill.addEventListener("click", () => {
+        const panel = document.getElementById(PANEL_ID);
+        if (panel) {
+            panel.classList.remove("itrack-panel-hidden");
+            pill.classList.add("itrack-reopen-hidden");
+        }
+    });
+    document.body.appendChild(pill);
+}
 function createPanel() {
-  const panel = getOrCreatePanel();
-
-  panel.innerHTML = "";
-
-  panel.classList.remove("itrack-panel-hidden");
-
-  const content = document.createElement("div");
-
-  content.className = "itrack-content";
-
-  panel.appendChild(content);
-
-  const recContainer = createSection(
-    content,
-    "Product in Video",
-    "itrack-recommended-tiles"
-  );
-
-  const allContainer = createSection(
-    content,
-    "For you",
-    "itrack-all-tiles"
-  );
-
-  MOCK_RECOMMENDED.forEach((p) => renderTile(recContainer, p));
-
-  MOCK_ALL.forEach((p) => renderTile(allContainer, p));
-
-  createReopenPill();
+    removeInstagramUI();
+    const panel = getOrCreatePanel();
+    panel.classList.remove("itrack-panel-hidden");
+    const content = document.createElement("div");
+    content.className = "itrack-content";
+    panel.appendChild(content);
+    createSection(content, "Recommended products", MOCK_RECOMMENDED, "itrack-recommended-tiles");
+    createSection(content, "All products", MOCK_ALL, "itrack-all-tiles");
+    createReopenPill();
 }
-
-/* ---------------- INIT ---------------- */
-
 function init() {
-  if (!isInstagram()) return;
-
-  if (document.getElementById(PANEL_ID)) return;
-
-  createPanel();
+    if (!isInstagram())
+        return;
+    if (document.getElementById(PANEL_ID))
+        return;
+    createPanel();
 }
-
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", init);
-} else {
-  init();
+    document.addEventListener("DOMContentLoaded", init);
 }
-
-/* ---------------- API HOOK ---------------- */
-
-window.addEventListener("itrack-products", (e) => {
-  const { recommended = [], all = [] } = e.detail || {};
-
-  const rec = document.getElementById("itrack-recommended-tiles");
-  const allTiles = document.getElementById("itrack-all-tiles");
-
-  if (!rec || !allTiles) return;
-
-  rec.innerHTML = "";
-  allTiles.innerHTML = "";
-
-  recommended.forEach((p) => renderTile(rec, p));
-  all.forEach((p) => renderTile(allTiles, p));
-});
+else {
+    init();
+}
+window.addEventListener("itrack-products", ((e) => {
+    const { recommended, all } = e.detail || { recommended: [], all: [] };
+    const recContainer = document.getElementById("itrack-recommended-tiles");
+    const allContainer = document.getElementById("itrack-all-tiles");
+    if (!recContainer || !allContainer)
+        return;
+    recContainer.innerHTML = "";
+    allContainer.innerHTML = "";
+    recommended.forEach(p => renderTile(recContainer, p));
+    all.forEach(p => renderTile(allContainer, p));
+}));

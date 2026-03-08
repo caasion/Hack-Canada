@@ -1,12 +1,13 @@
-/* iTrack – Firefox extension panel styles (cards only, no background) */
+/* iTrack – Firefox extension panel styles */
 
 .itrack-panel {
   position: fixed;
-  top: 0;
-  right: 20px;
+  top: 50%;
+  right: 50px;
   width: 340px;
   max-width: 92vw;
-  height: 100vh;
+  height: auto; /* shrink to fit content */
+  max-height: 90vh; /* optional: prevent it from being too tall */
   background: transparent;
   color: #111827;
   z-index: 2147483647;
@@ -15,6 +16,8 @@
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
   pointer-events: none;
+
+  transform: translateY(-50%); /* vertically center */
 }
 
 .itrack-panel > * {
@@ -25,334 +28,169 @@
   display: none;
 }
 
-/* Floating close – circular button with white backdrop */
+/* CLOSE BUTTON */
+
 .itrack-close-float {
   position: absolute;
   top: 10px;
   right: 10px;
   width: 24px;
   height: 24px;
-  padding: 0;
-  background: rgba(255, 255, 255, 0.95);
+  background: rgba(255,255,255,0.95);
   border: none;
   color: #111827;
   cursor: pointer;
   border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
-  transition: background 120ms ease-out, box-shadow 120ms ease-out, transform 120ms ease-out;
-  z-index: 20;
-}
-
-.itrack-close-float:hover {
-  background: #ffffff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
-  transform: translateY(-1px);
-}
-
-.itrack-close-float svg {
-  display: block;
-  width: 12px;
-  height: 12px;
-}
-
-.itrack-close-float:focus-visible {
-  outline: 2px solid #111827;
-  outline-offset: 2px;
-}
-
-.itrack-content {
-  position: relative;
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 14px 16px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(120, 120, 128, 0.5) transparent;
-}
-
-.itrack-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.itrack-content::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.itrack-content::-webkit-scrollbar-thumb {
-  background: rgba(120, 120, 128, 0.7);
-  border-radius: 999px;
-}
-
-.itrack-section {
-  margin-bottom: 16px;
-}
-
-.itrack-section-recommended.itrack-section--closed {
-  display: none;
-}
-
-.itrack-section-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+  justify-content: center;
 }
 
-.itrack-section-header .itrack-section-title {
-  margin: 0;
+/* CONTENT */
+
+.itrack-content {
   flex: 1;
-  text-align: left;
+  padding: 12px 14px 16px;
+  overflow: hidden; /* parent itself doesn’t scroll */
+  display: flex;
+  flex-direction: column;
 }
 
-.itrack-section-close {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: #ffffff;
-  font-size: 1.25rem;
-  line-height: 1;
-  cursor: pointer;
-  border-radius: 4px;
-  opacity: 0.8;
-  transition: opacity 120ms ease-out;
-}
+/* SECTIONS */
 
-.itrack-section-close:hover {
-  opacity: 1;
-}
-
-.itrack-section-close:focus-visible {
-  outline: 2px solid #ffffff;
-  outline-offset: 2px;
-}
-
-.itrack-open-recommendations {
-  margin-bottom: 12px;
-  text-align: right;
-}
-
-.itrack-open-recommendations.itrack-open-hidden {
-  display: none;
-}
-
-.itrack-open-recommendations-btn {
-  padding: 6px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  background: transparent;
-  color: #ffffff;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-  border-radius: 8px;
-  opacity: 0.9;
-  transition: opacity 120ms ease-out, background 120ms ease-out;
-}
-
-.itrack-open-recommendations-btn:hover {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.itrack-open-recommendations-btn:focus-visible {
-  outline: 2px solid #ffffff;
-  outline-offset: 2px;
+.itrack-section {
+  margin-bottom: 18px;
+  position: relative;
 }
 
 .itrack-section-title {
-  font-size: 0.8125rem;
+  font-size: 13px;
   font-weight: 600;
-  color: #111827; /* changed from #ffffff to black */
-  margin: 0 0 8px 0;
-  text-align: left;
-  display: block;
+  margin-bottom: 14px;
 }
+
+/* PRODUCT LIST */
 
 .itrack-tiles {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 24px;
+  max-height: calc(56px * 4 + 72px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  position: relative;
+  justify-content: flex-start;
+  padding-bottom: 16px; /* give space for fade */
 }
 
+/* hide scrollbars for clean look */
+.itrack-tiles::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
+
+/* TOP & BOTTOM FADE – ONLY ON TILES */
+.itrack-tiles::before,
+.itrack-tiles::after {
+  content: "";
+  position: sticky;
+  left: 0;
+  right: 0;
+  height: 30px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.itrack-tiles::before {
+  top: 0;
+  background: linear-gradient(to bottom, rgba(255,255,255,1) 0%, rgba(255,255,255,0) 100%);
+}
+
+.itrack-tiles::after {
+  bottom: 0;
+  background: linear-gradient(to top, rgba(255,255,255,1) 0%, rgba(255,255,255,0) 100%);
+}
+
+/* PRODUCT TILE */
+
 .itrack-tile {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 11px;
-  background: #f1f5f9; /* slightly darker than base white */
+  background: #f1f5f9;
   border-radius: 10px;
+  border: 1px solid rgba(15,23,42,0.12);
+  box-shadow: 0 2px 8px rgba(15,23,42,0.08);
   cursor: pointer;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-  transition:
-    transform 140ms ease-out,
-    box-shadow 140ms ease-out,
-    border-color 140ms ease-out,
-    background 160ms ease-out;
-}
-
-.itrack-tile::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  opacity: 0;
-  background: rgba(15, 23, 42, 0.07);
-  transition: opacity 160ms ease-out;
-  pointer-events: none;
 }
 
 .itrack-tile:hover {
   transform: translateY(-1px);
-  border-color: rgba(15, 23, 42, 0.24);
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.2);
+  border-color: rgba(15,23,42,0.24);
+  box-shadow: 0 6px 16px rgba(15,23,42,0.2);
 }
 
-.itrack-tile:hover::after {
-  opacity: 1;
-}
-
-.itrack-tile-media {
-  flex-shrink: 0;
-}
+/* IMAGE */
 
 .itrack-tile-media img {
-  display: block;
-  border-radius: 10px;
+  width: 56px;
+  height: 56px;
   object-fit: cover;
+  border-radius: 10px;
 }
+
+/* TEXT */
 
 .itrack-tile-body {
   flex: 1;
-  min-width: 0;
   display: grid;
   grid-template-columns: 1fr auto;
-  align-items: center;
   gap: 6px 10px;
 }
 
 .itrack-tile-name {
-  font-weight: 600;
   grid-column: 1 / -1;
+  font-weight: 600;
 }
 
 .itrack-tile-price {
-  color: rgba(15, 23, 42, 0.7);
   font-size: 12px;
+  color: rgba(15,23,42,0.7);
   font-weight: 600;
 }
 
-/* Reopen pill – show when panel is hidden */
+/* REOPEN BUTTON */
+
 .itrack-reopen-pill {
   position: fixed;
   bottom: 24px;
   right: 24px;
   padding: 10px 18px;
-  background: rgba(255, 255, 255, 0.95);
+  background: rgba(255,255,255,0.95);
   color: #111827;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(15,23,42,0.12);
   border-radius: 999px;
   font-weight: 700;
   font-size: 14px;
   cursor: pointer;
   z-index: 2147483646;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  transition: transform 150ms ease-out, box-shadow 150ms ease-out, background 150ms ease-out;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
 }
 
 .itrack-reopen-pill:hover {
   background: #ffffff;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
-  transform: translateY(-1px);
-}
-
-.itrack-reopen-pill:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 2px;
-}
-
-/* Hide reopen pill whenever panel is visible (cards open) */
-.itrack-panel:not(.itrack-panel-hidden) ~ .itrack-reopen-pill {
-  display: none !important;
 }
 
 .itrack-reopen-pill.itrack-reopen-hidden {
   display: none;
 }
 
-/* Expanded product view – black/white */
-.itrack-expanded-wrap {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: #ffffff;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  overflow: auto;
+.itrack-section-title {
+  font-size: 1.25rem;   /* Increase this value for bigger text */
+  font-weight: 700;     /* Make it bolder if desired */
+  color: #111827;
+  margin: 0 0 0 0;
+  text-align: left;
+  display: block;
 }
-
-.itrack-expanded-wrap.itrack-expanded-hidden {
-  display: none;
-}
-
-.itrack-expanded {
-  padding: 12px 16px;
-  flex: 1;
-}
-
-.itrack-expanded-back {
-  background: transparent;
-  border: none;
-  color: #2563eb;
-  cursor: pointer;
-  padding: 8px 0;
-  margin-bottom: 12px;
-  font-size: 14px;
-}
-
-.itrack-expanded-back:hover {
-  text-decoration: underline;
-  color: #1d4ed8;
-}
-
-.itrack-expanded-content {
-  flex: 1;
-}
-
-.itrack-expanded-image {
-  margin-bottom: 12px;
-  text-align: center;
-}
-
-.itrack-expanded-image img {
-  max-width: 100%;
-  height: auto;
-  border-radius: 8px;
-}
-
-.itrack-expanded-name {
-  font-size: 18px;
-  font-weight: 700;
-  margin: 0 0 8px 0;
-}
-
-.itrack-expanded-desc {
-  color: rgba(55, 65, 81, 0.8);
-  margin: 0 0 8px 0;
-  font-size: 13px;
-}
-
-.itrack-expanded-price {
-  margin: 0 0 12px 0;
-  font-weight: 600;
-}
-
