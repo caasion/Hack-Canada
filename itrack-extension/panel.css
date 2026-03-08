@@ -3,7 +3,7 @@
 .itrack-panel {
   position: fixed;
   top: 50%;
-  right: 0 !important;
+  right: 18px !important;
   width: 400px;
   max-width: 92vw;
   height: auto;
@@ -17,7 +17,7 @@
   font-size: 14px;
   pointer-events: none;
   transform: translateY(-50%);
-  border-radius: 12px 0 0 12px; /* flush right edge to screen */
+  border-radius: 16px;
 }
 
 .itrack-panel > * {
@@ -63,7 +63,7 @@
   height: 530px;
   width: 100%;
   border: none;
-  border-radius: 12px 0 0 12px;
+  border-radius: 16px;
   background: transparent;
 }
 

@@ -1,22 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import SectionRow from "./SectionRow";
+import { OfferCarousel, type Offer } from "@/components/ui/offer-carousel";
+import { GlassFilter } from "@/components/ui/liquid-glass";
 import type { PanelData, Product } from "./types";
 
-const TEST_FROM_VIDEO: Product[] = [
-  { id: "fv-1", name: "White Plaid Shirt", imageUrl: "https://images.unsplash.com/photo-1596755094514-f87e34085b2c?w=400&h=300&fit=crop", price: "$50", url: "https://example.com/white-plaid" },
-  { id: "fv-2", name: "Classic Denim Jacket", imageUrl: "https://images.unsplash.com/photo-1544022613-e87ca75a784a?w=400&h=300&fit=crop", price: "$89", url: "https://example.com/denim-jacket" },
-  { id: "fv-3", name: "Minimal Sneakers", imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=400&h=300&fit=crop", price: "$120", url: "https://example.com/sneakers" },
-];
-
-const TEST_CURATED: Product[] = [
-  { id: "cur-1", name: "Studio Headphones", imageUrl: "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400&h=300&fit=crop", price: "$349", url: "https://example.com/headphones" },
-  { id: "cur-2", name: "Leather Tote", imageUrl: "https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=400&h=300&fit=crop", price: "$245", url: "https://example.com/tote" },
-  { id: "cur-3", name: "Smart Watch", imageUrl: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&h=300&fit=crop", price: "$199", url: "https://example.com/watch" },
-];
-
 const defaultData: PanelData = {
-  recommended: TEST_FROM_VIDEO,
-  all: TEST_CURATED,
+  recommended: [],
+  all: [],
 };
 
 function getInitialData(): PanelData {
@@ -25,12 +14,25 @@ function getInitialData(): PanelData {
   }
   const injected = window.__ITRACK_PANEL_DATA__;
   return {
-    recommended: injected.recommended?.length ? injected.recommended : defaultData.recommended,
-    all: injected.all?.length ? injected.all : defaultData.all,
+    recommended: Array.isArray(injected.recommended) ? injected.recommended : defaultData.recommended,
+    all: Array.isArray(injected.all) ? injected.all : defaultData.all,
   };
 }
 
 const DWELL_THRESHOLD_MS = 1500;
+
+function toOffers(products: Product[]): Offer[] {
+  return products.map((product) => ({
+    id: product.id,
+    imageSrc: product.imageUrl,
+    imageAlt: product.name,
+    title: product.name,
+    description: product.shortDescription ?? "",
+    price: product.price,
+    href: product.url,
+    kind: product.kind,
+  }));
+}
 
 export default function App() {
   const [data, setData] = useState<PanelData>(getInitialData);
@@ -123,9 +125,12 @@ export default function App() {
   }, [gazedCardId, dwellProgress]);
 
   return (
-    <div className="itrack-panel-app">
-      <SectionRow title="From Video" products={data.recommended} />
-      <SectionRow title="Curated For You" products={data.all} />
-    </div>
+    <>
+      <GlassFilter />
+      <div className="itrack-panel-app">
+        <OfferCarousel title="From Video" offers={toOffers(data.recommended)} />
+        <OfferCarousel title="Curated For You" offers={toOffers(data.all)} />
+      </div>
+    </>
   );
 }

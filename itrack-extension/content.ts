@@ -1,5 +1,5 @@
-/**
- * iTrack Firefox extension – content script.
+﻿/**
+ * iTrack Firefox extension â€“ content script.
  * Injects a right-side panel on Instagram with Recommended products (top) and All products (bottom).
  * Clicking a product tile redirects to its link immediately in a new tab.
  * Removes Instagram Reels nav buttons, Messages toolbar, and floating buttons dynamically.
@@ -20,20 +20,12 @@ interface Product {
   kind: "recommended" | "all";
 }
 
-const MOCK_RECOMMENDED: Product[] = [
-  { id: "rec-1", name: "Pegasus Runner", shortDescription: "Lightweight road-running shoe", imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=280&h=280&fit=crop", price: "$120", url: "https://example.com/pegasus-runner", kind: "recommended" },
-  { id: "rec-2", name: "Studio Headphones", shortDescription: "Noise-cancelling over-ear", imageUrl: "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=280&h=280&fit=crop", price: "$349", url: "https://example.com/studio-headphones", kind: "recommended" },
-  { id: "rec-3", name: "Everyday Tote", shortDescription: "Soft leather carry-all", imageUrl: "https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=280&h=280&fit=crop", price: "$245", url: "https://example.com/everyday-tote", kind: "recommended" },
-];
-
-const MOCK_ALL: Product[] = [
-  { id: "all-1", name: "Classic Tee", shortDescription: "Organic cotton, relaxed fit", imageUrl: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=280&h=280&fit=crop", price: "$25", url: "https://example.com/classic-tee", kind: "all" },
-  { id: "all-2", name: "Daypack", shortDescription: "Minimal everyday backpack", imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=280&h=280&fit=crop", price: "$89", url: "https://example.com/daypack", kind: "all" },
-  { id: "all-3", name: "Smart Water Bottle", shortDescription: "Tracks intake, glows on schedule", imageUrl: "https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=280&h=280&fit=crop", price: "$59", url: "https://example.com/smart-bottle", kind: "all" },
-];
+const INITIAL_RECOMMENDED: Product[] = [];
+const INITIAL_ALL: Product[] = [];
 
 const PANEL_ID       = "itrack-panel";
 const REOPEN_ID      = "itrack-reopen-pill";
+const PANEL_IFRAME_ID = "itrack-panel-iframe";
 const GAZE_IFRAME_ID = "itrack-gaze-iframe";
 const GAZE_DOT_ID    = "itrack-gaze-dot";
 const ANCHOR_BOX_ID  = "itrack-anchor-box";
@@ -41,13 +33,6 @@ const ANCHOR_PROGRESS_ID = "itrack-anchor-progress";
 const AUTO_CAPTURE_TOGGLE_ID = "itrack-auto-capture-toggle";
 const AUTO_CAPTURE_STATUS_ID = "itrack-auto-capture-status";
 const DEV_ACTIONS_ROW_ID = "itrack-dev-actions-row";
-const PANEL_IFRAME_ID = "itrack-panel-iframe";
-
-/** Current product lists sent to the React panel iframe. */
-let panelProducts: { recommended: Product[]; all: Product[] } = {
-  recommended: MOCK_RECOMMENDED,
-  all: MOCK_ALL,
-};
 
 /** Replace with your real API endpoint. */
 const GAZE_API_ENDPOINT = "http://localhost:3000/api/gaze";
@@ -109,8 +94,13 @@ function moveGazeDot(x: number, y: number): void {
 
 function updateProductSectionVisibility(): void {
   const hideSections = gazeMode === "calibration";
-  const panelIframe = document.getElementById(PANEL_IFRAME_ID);
-  if (panelIframe) panelIframe.style.display = hideSections ? "none" : "";
+  document.querySelectorAll<HTMLElement>(`#${PANEL_ID} .itrack-section`).forEach((section) => {
+    section.style.display = hideSections ? "none" : "";
+  });
+  const panelIframe = getPanelIframe();
+  if (panelIframe) {
+    panelIframe.style.display = hideSections ? "none" : "block";
+  }
 }
 
 function updateDevActionsVisibility(): void {
@@ -120,11 +110,11 @@ function updateDevActionsVisibility(): void {
 }
 
 /**
- * calibration – white overlay, pointer-events active so calibration UI is
+ * calibration â€“ white overlay, pointer-events active so calibration UI is
  *               interactive; eye tracking cursor + calibration dots visible.
- * dev          – iframe stays invisible (opacity 0) so its white background
+ * dev          â€“ iframe stays invisible (opacity 0) so its white background
  *               never shows; a native gaze dot on the host page shows position.
- * normal       – iframe invisible; tracking runs silently in the background,
+ * normal       â€“ iframe invisible; tracking runs silently in the background,
  *               dwell POSTs still fire.
  */
 function setGazeMode(mode: GazeMode): void {
@@ -147,7 +137,7 @@ function setGazeMode(mode: GazeMode): void {
       iframe.style.pointerEvents = "auto";
       break;
     case "dev":
-      // Hide the iframe — its document always has a white background that
+      // Hide the iframe â€” its document always has a white background that
       // can't be made transparent. The native gaze dot above replaces the
       // built-in EyeGesturesLite cursor.
       iframe.style.opacity       = "0";
@@ -164,10 +154,17 @@ function setGazeMode(mode: GazeMode): void {
 }
 
 // ---------------------------------------------------------------------------
-// Extension messaging – allow popup to get/set gaze mode
+// Extension messaging â€“ allow popup to get/set gaze mode
 // ---------------------------------------------------------------------------
 const itrackRuntime =
   (globalThis as any).browser?.runtime ?? (globalThis as any).chrome?.runtime ?? null;
+
+function runtimeGetUrl(path: string): string {
+  if (typeof itrackRuntime?.getURL === "function") {
+    return String(itrackRuntime.getURL(path));
+  }
+  throw new Error("Extension runtime.getURL is unavailable");
+}
 
 if (itrackRuntime?.onMessage?.addListener) {
   itrackRuntime.onMessage.addListener((message: any) => {
@@ -191,6 +188,17 @@ if (itrackRuntime?.onMessage?.addListener) {
     return undefined;
   });
 }
+
+// ---------------------------------------------------------------------------
+// Dwell state
+// ---------------------------------------------------------------------------
+interface DwellState {
+  tileId: string | null;
+  timerId: ReturnType<typeof setTimeout> | null;
+  startTime: number;
+}
+
+const dwell: DwellState = { tileId: null, timerId: null, startTime: 0 };
 
 interface AutoCaptureState {
   enabled: boolean;
@@ -223,6 +231,84 @@ const autoCapture: AutoCaptureState = {
   lastCalibrated: false,
   captureInFlight: false,
 };
+
+let panelData: { recommended: Product[]; all: Product[] } = {
+  recommended: [...INITIAL_RECOMMENDED],
+  all: [...INITIAL_ALL],
+};
+let panelIframeLoaded = false;
+let panelIframeLoadTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let recommendedTilesContainer: HTMLElement | null = null;
+let allTilesContainer: HTMLElement | null = null;
+
+function clearPanelIframeLoadTimeout(): void {
+  if (panelIframeLoadTimeoutId !== null) {
+    clearTimeout(panelIframeLoadTimeoutId);
+    panelIframeLoadTimeoutId = null;
+  }
+}
+
+function renderProductsInContainer(container: HTMLElement | null, products: Product[]): void {
+  if (!container) return;
+  container.innerHTML = "";
+  products.forEach((product) => renderTile(container, product));
+}
+
+function updateLegacyPanelData(data: { recommended: Product[]; all: Product[] }): void {
+  renderProductsInContainer(recommendedTilesContainer, data.recommended);
+  renderProductsInContainer(allTilesContainer, data.all);
+}
+
+function mountLegacyPanelSections(parent: HTMLElement): void {
+  if (!recommendedTilesContainer) {
+    recommendedTilesContainer = createSection(
+      parent,
+      "Recommended products",
+      panelData.recommended,
+      "itrack-recommended-tiles",
+    );
+  }
+
+  if (!allTilesContainer) {
+    allTilesContainer = createSection(parent, "All products", panelData.all, "itrack-all-tiles");
+  }
+
+  updateLegacyPanelData(panelData);
+  updateProductSectionVisibility();
+}
+
+function getPanelIframe(): HTMLIFrameElement | null {
+  return document.getElementById(PANEL_IFRAME_ID) as HTMLIFrameElement | null;
+}
+
+function sendPanelDataToIframe(data: { recommended: Product[]; all: Product[] }): void {
+  const iframe = getPanelIframe();
+  if (!iframe?.contentWindow || !panelIframeLoaded) {
+    updateLegacyPanelData(data);
+    return;
+  }
+  iframe.contentWindow.postMessage(
+    {
+      type: "ITRACK_PANEL_DATA",
+      payload: data,
+    },
+    "*",
+  );
+}
+
+function relayGazeToPanelIframe(x: number, y: number, calibrated: boolean): void {
+  const iframe = getPanelIframe();
+  if (!iframe?.contentWindow || !panelIframeLoaded) return;
+  iframe.contentWindow.postMessage(
+    {
+      type: "ITRACK_GAZE",
+      x,
+      y,
+      calibrated,
+    },
+    "*",
+  );
+}
 
 function injectAnchorBox(): void {
   if (document.getElementById(ANCHOR_BOX_ID)) return;
@@ -358,15 +444,11 @@ function isInsideAnchoredBox(x: number, y: number): boolean {
 }
 
 async function captureVisibleViewportDataUrl(): Promise<string> {
-  const runtime =
-    (globalThis as { browser?: { runtime?: { sendMessage?: (message: unknown) => Promise<unknown> } } }).browser
-      ?.runtime;
-
-  if (!runtime?.sendMessage) {
+  if (typeof itrackRuntime?.sendMessage !== "function") {
     throw new Error("browser.runtime.sendMessage is not available for tab capture");
   }
 
-  const response = (await runtime.sendMessage({
+  const response = (await itrackRuntime.sendMessage({
     type: "ITRACK_CAPTURE_VISIBLE_TAB",
   })) as CaptureVisibleTabResponse | null;
 
@@ -599,20 +681,6 @@ function attachImageFallback(img: HTMLImageElement): void {
   }, { once: true });
 }
 
-// ---------------------------------------------------------------------------
-// Backend-sourced product type (Cat2 picks with confidence)
-// ---------------------------------------------------------------------------
-interface BackendProduct {
-  name: string;
-  price: string;
-  image_url: string;
-  buy_url: string;
-  source: string;
-  confidence?: number;
-  style_signals?: string[];
-  brand?: string;
-}
-
 // Clicking tile now opens the product URL in a new tab
 function renderTile(container: HTMLElement, product: Product): void {
   const tile = document.createElement("div");
@@ -639,113 +707,6 @@ function renderTile(container: HTMLElement, product: Product): void {
   });
 
   container.appendChild(tile);
-}
-
-/**
- * Renders a Cat2 tile with a confidence fill bar and optional style badges.
- * Attaches IntersectionObserver for skip detection.
- */
-function renderBackendTile(container: HTMLElement, product: BackendProduct, index: number): void {
-  const tile = document.createElement("div");
-  tile.className = "itrack-tile itrack-tile--backend";
-  const id = `backend-${index}-${Date.now()}`;
-  tile.setAttribute("data-product-id",     id);
-  tile.setAttribute("data-product-name",   product.name);
-  tile.setAttribute("data-product-url",    product.buy_url);
-  tile.setAttribute("data-product-price",  product.price);
-  tile.setAttribute("data-product-styles", (product.style_signals ?? []).join(","));
-  tile.setAttribute("data-product-brand",  product.brand ?? "");
-
-  const confidence = product.confidence ?? 0;
-  const pct = Math.round(confidence * 100);
-  const fillColor =
-    confidence > 0.7 ? "rgba(45,212,191,0.9)" :
-    confidence > 0.4 ? "rgba(251,191,36,0.9)" :
-    "rgba(148,163,184,0.6)";
-
-  const priceHtml = product.price
-    ? ` <span class="itrack-tile-price">${escapeHtml(product.price)}</span>`
-    : "";
-
-  tile.innerHTML = `
-    <div class="itrack-tile-media">
-      <img src="${escapeHtml(product.image_url)}" alt="" width="56" height="56" loading="lazy" />
-    </div>
-    <div class="itrack-tile-body">
-      <span class="itrack-tile-name">${escapeHtml(product.name)}</span>${priceHtml}
-      <div class="itrack-confidence-bar" title="Match confidence: ${pct}%" style="
-        margin-top:4px;
-        height:3px;
-        border-radius:999px;
-        overflow:hidden;
-        background:rgba(255,255,255,0.12);
-      ">
-        <div style="
-          width:${pct}%;
-          height:100%;
-          background:${fillColor};
-          transition:width 600ms ease;
-        "></div>
-      </div>
-    </div>
-  `;
-
-  const img = tile.querySelector("img") as HTMLImageElement | null;
-  if (img) {
-    img.addEventListener("error", () => {
-      img.src = "https://placehold.co/280x280/111827/F9FAFB?text=Product";
-    }, { once: true });
-  }
-
-  tile.addEventListener("click", () => {
-    window.open(product.buy_url, "_blank");
-  });
-
-  container.appendChild(tile);
-}
-
-/** (Re-)populates the Recommended section from a live backend response. */
-function updateRecommendedTiles(picks: BackendProduct[]): void {
-  panelProducts = {
-    ...panelProducts,
-    recommended: picks.map((p, i) => ({
-      id: `rec-${i}`,
-      name: p.name,
-      shortDescription: p.brand ?? "",
-      imageUrl: p.image_url,
-      price: p.price,
-      url: p.buy_url,
-      kind: "recommended" as const,
-    })),
-  };
-  sendPanelData();
-}
-
-function createPanelIframe(parent: HTMLElement): void {
-  if (document.getElementById(PANEL_IFRAME_ID)) return;
-  const iframe = document.createElement("iframe");
-  iframe.id = PANEL_IFRAME_ID;
-  iframe.src = (globalThis as any).browser.runtime.getURL("panel/panel.html");
-  iframe.setAttribute("allowTransparency", "true");
-  iframe.style.cssText = [
-    "width:100%",
-    "flex:1 1 0",
-    "min-height:0",
-    "border:none",
-    "background:transparent",
-    "overflow:hidden",
-  ].join(";");
-  iframe.addEventListener("load", () => sendPanelData(), { once: true });
-  parent.appendChild(iframe);
-}
-
-function sendPanelData(): void {
-  const iframe = document.getElementById(PANEL_IFRAME_ID) as HTMLIFrameElement | null;
-  if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage(
-    { type: "ITRACK_PANEL_DATA", payload: panelProducts },
-    "*",
-  );
 }
 
 function createSection(parent: HTMLElement, title: string, products: Product[], containerId: string): HTMLElement {
@@ -860,6 +821,10 @@ function createPanel(): void {
   removeInstagramUI();
   const panel = getOrCreatePanel();
   panel.classList.remove("itrack-panel-hidden");
+  panelIframeLoaded = false;
+  clearPanelIframeLoadTimeout();
+  recommendedTilesContainer = null;
+  allTilesContainer = null;
 
   const content = document.createElement("div");
   content.className = "itrack-content";
@@ -880,7 +845,43 @@ function createPanel(): void {
   createAutoCaptureControl(actionsRow);
   updateDevActionsVisibility();
 
-  createPanelIframe(content);
+  const panelIframe = document.createElement("iframe");
+  panelIframe.id = PANEL_IFRAME_ID;
+  panelIframe.className = "itrack-panel-iframe";
+  panelIframe.setAttribute("title", "iTrack products");
+  const fallbackToLegacy = () => {
+    if (panelIframeLoaded) return;
+    panelIframe.remove();
+    mountLegacyPanelSections(content);
+  };
+  panelIframe.addEventListener("error", () => {
+    console.warn("[iTrack] panel iframe failed to load; using legacy panel renderer");
+    clearPanelIframeLoadTimeout();
+    fallbackToLegacy();
+  });
+  panelIframe.addEventListener("load", () => {
+    panelIframeLoaded = true;
+    clearPanelIframeLoadTimeout();
+    sendPanelDataToIframe(panelData);
+  });
+
+  try {
+    panelIframe.src = runtimeGetUrl("panel/panel.html");
+  } catch (error) {
+    console.warn("[iTrack] runtime URL unavailable; using legacy panel renderer", error);
+    fallbackToLegacy();
+    updateProductSectionVisibility();
+    createReopenPill();
+    return;
+  }
+
+  content.appendChild(panelIframe);
+  panelIframeLoadTimeoutId = setTimeout(() => {
+    if (panelIframeLoaded) return;
+    console.warn("[iTrack] panel iframe load timeout; using legacy panel renderer");
+    fallbackToLegacy();
+  }, 2000);
+
   updateProductSectionVisibility();
 
   createReopenPill();
@@ -893,14 +894,14 @@ function injectGazeIframe(): void {
   if (document.getElementById(GAZE_IFRAME_ID)) return;
   const iframe = document.createElement("iframe");
   iframe.id  = GAZE_IFRAME_ID;
-  // browser.runtime.getURL is available in content scripts in Firefox MV2
-  iframe.src = (globalThis as any).browser.runtime.getURL("gaze-page.html");
-  // Zero-size, fully transparent – EyeGesturesLite renders its own overlay
+  // runtime.getURL resolves extension page URL across browser/chrome APIs.
+  iframe.src = runtimeGetUrl("gaze-page.html");
+  // Zero-size, fully transparent â€“ EyeGesturesLite renders its own overlay
   // inside the iframe's own document (moz-extension:// origin).
   // allowTransparency makes the iframe surface genuinely transparent so the
   // default white iframe background does not bleed through.
   iframe.setAttribute("allowTransparency", "true");
-  // Start invisible (normal mode) — setGazeMode() can change this
+  // Start invisible (normal mode) â€” setGazeMode() can change this
   iframe.style.cssText = [
     "position:fixed",
     "top:0","left:0",
@@ -919,21 +920,80 @@ function injectGazeIframe(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Gaze: forward to React panel iframe; dwell POST fired when panel reports ITRACK_DWELL_FIRED
+// Gaze hit-testing
 // ---------------------------------------------------------------------------
-function fireDwellPost(payload: {
-  productId: string;
-  productName: string;
-  productUrl: string;
-  productPrice: string;
-  gazeX: number;
-  gazeY: number;
-  dwellDuration: number;
-}): void {
+function getGazedTile(x: number, y: number): HTMLElement | null {
+  const tiles = document.querySelectorAll<HTMLElement>(".itrack-tile");
+  for (const tile of Array.from(tiles)) {
+    const r = tile.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      return tile;
+    }
+  }
+  return null;
+}
+
+function clearDwell(): void {
+  if (dwell.timerId !== null) {
+    clearTimeout(dwell.timerId);
+    dwell.timerId = null;
+  }
+  if (dwell.tileId) {
+    const prev = document.querySelector<HTMLElement>(`[data-product-id="${dwell.tileId}"]`);
+    if (prev) {
+      prev.classList.remove("itrack-tile--gaze-active");
+      prev.style.removeProperty("--dwell-progress");
+    }
+  }
+  dwell.tileId  = null;
+  dwell.startTime = 0;
+}
+
+function fireDwellPost(
+  tileEl: HTMLElement,
+  dwellMs: number,
+  gazeX: number,
+  gazeY: number
+): void {
+  const body = {
+    productId:    tileEl.dataset.productId    ?? "",
+    productName:  tileEl.dataset.productName  ?? "",
+    productUrl:   tileEl.dataset.productUrl   ?? "",
+    productPrice: tileEl.dataset.productPrice ?? "",
+    gazeX,
+    gazeY,
+    dwellDuration: dwellMs,
+  };
   fetch(GAZE_API_ENDPOINT, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body:    JSON.stringify(body),
+  }).catch(err => console.warn("[iTrack] gaze POST failed:", err));
+}
+
+function fireDwellPostFromPayload(payload: {
+  productId?: unknown;
+  productName?: unknown;
+  productUrl?: unknown;
+  productPrice?: unknown;
+  gazeX?: unknown;
+  gazeY?: unknown;
+  dwellDuration?: unknown;
+}): void {
+  const body = {
+    productId: typeof payload.productId === "string" ? payload.productId : "",
+    productName: typeof payload.productName === "string" ? payload.productName : "",
+    productUrl: typeof payload.productUrl === "string" ? payload.productUrl : "",
+    productPrice: typeof payload.productPrice === "string" ? payload.productPrice : "",
+    gazeX: typeof payload.gazeX === "number" ? payload.gazeX : 0,
+    gazeY: typeof payload.gazeY === "number" ? payload.gazeY : 0,
+    dwellDuration: typeof payload.dwellDuration === "number" ? payload.dwellDuration : DWELL_THRESHOLD_MS,
+  };
+
+  fetch(GAZE_API_ENDPOINT, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(body),
   }).catch(err => console.warn("[iTrack] gaze POST failed:", err));
 }
 
@@ -949,30 +1009,34 @@ function handleGazeMessage(event: MessageEvent): void {
 
   const { x, y, calibrated } = data;
   if (typeof x !== "number" || typeof y !== "number") return;
+  const calibratedBool = Boolean(calibrated);
 
+  // Move the native gaze dot in dev mode so the cursor is visible even while
+  // calibration is still in progress (useful for debugging gaze accuracy).
   if (gazeMode === "dev") moveGazeDot(x, y);
 
-  if (!calibrated) {
-    observeAutoCaptureGaze(x, y, false);
+  observeAutoCaptureGaze(x, y, calibratedBool);
+  relayGazeToPanelIframe(x, y, calibratedBool);
+}
+
+function handlePanelDwellMessage(event: MessageEvent): void {
+  if (!event.origin.startsWith("moz-extension://")) return;
+  const data = event.data as { type?: string; payload?: unknown };
+  if (data?.type !== "ITRACK_DWELL_FIRED" || !data.payload || typeof data.payload !== "object") return;
+  fireDwellPostFromPayload(data.payload as Record<string, unknown>);
+}
+
+function handleWindowMessage(event: MessageEvent): void {
+  const data = event.data as { type?: string } | null;
+  if (!data?.type) return;
+  if (data.type === "ITRACK_GAZE") {
+    handleGazeMessage(event);
     return;
   }
-
-  observeAutoCaptureGaze(x, y, true);
-
-  // Forward gaze to React panel iframe for card hit-testing and dwell
-  const panelIframe = document.getElementById(PANEL_IFRAME_ID) as HTMLIFrameElement | null;
-  if (panelIframe?.contentWindow) {
-    panelIframe.contentWindow.postMessage({ type: "ITRACK_GAZE", x, y, calibrated }, "*");
+  if (data.type === "ITRACK_DWELL_FIRED") {
+    handlePanelDwellMessage(event);
   }
 }
-
-function handlePanelMessage(event: MessageEvent): void {
-  if (!event.origin.startsWith("moz-extension://")) return;
-  const data = event.data as { type?: string; payload?: any };
-  if (data?.type !== "ITRACK_DWELL_FIRED" || !data.payload) return;
-  fireDwellPost(data.payload);
-}
-
 function init(): void {
   if (!isInstagram()) return;
   if (document.getElementById(PANEL_ID)) return;
@@ -981,8 +1045,7 @@ function init(): void {
   injectAnchorBox();
   injectGazeIframe();
   watchForImageInput();
-  window.addEventListener("message", handleGazeMessage);
-  window.addEventListener("message", handlePanelMessage);
+  window.addEventListener("message", handleWindowMessage);
 }
 
 if (document.readyState === "loading") {
@@ -993,8 +1056,11 @@ if (document.readyState === "loading") {
 
 window.addEventListener("itrack-products", ((e: CustomEvent<{ recommended: Product[]; all: Product[] }>) => {
   const { recommended, all } = e.detail || { recommended: [], all: [] };
-  panelProducts = { recommended: recommended || [], all: all || [] };
-  sendPanelData();
+  panelData = {
+    recommended: [...recommended],
+    all: [...all],
+  };
+  sendPanelDataToIframe(panelData);
 }) as EventListener);
 
 type ItrackRuntimeConfig = {
@@ -1046,12 +1112,26 @@ type ProxyFetchResult = {
   transport: "proxy" | "direct";
 };
 
+type DwellApiProduct = {
+  name?: unknown;
+  price?: unknown;
+  image_url?: unknown;
+  buy_url?: unknown;
+  source?: unknown;
+};
+
+type DwellApiResponse = {
+  current_product?: unknown;
+  taste_picks?: unknown;
+};
+
 const DEFAULT_CLOUDINARY_CLOUD_NAME = "";
 const DEFAULT_CLOUDINARY_UPLOAD_PRESET = "";
 const DEFAULT_DWELL_BACKEND_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_DWELL_USER_ID = "frontend-test-user";
 const DEFAULT_DWELL_DURATION_MS = 2400;
 const BACKEND_CONFIG_CACHE_MS = 60_000;
+const PANEL_HISTORY_LIMIT = 24;
 // Optional runtime override:
 // window.ITRACK_RUNTIME_CONFIG = {
 //   cloudinaryCloudName: "your_cloud_name",
@@ -1068,6 +1148,138 @@ let backendConfigCache:
       config: Partial<ItrackRuntimeConfig>;
     }
   | undefined;
+let panelProductSequence = 0;
+
+function toText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function toPanelProduct(
+  raw: DwellApiProduct,
+  kind: Product["kind"],
+  index: number
+): Product | null {
+  const name = toText(raw.name).trim();
+  if (!name) return null;
+
+  const imageUrl = toText(raw.image_url).trim();
+  const buyUrl = toText(raw.buy_url).trim();
+  const price = toText(raw.price).trim();
+  const source = toText(raw.source).trim();
+
+  return {
+    id: `${kind}-live-${Date.now()}-${index}-${panelProductSequence++}`,
+    name,
+    shortDescription: source || "live",
+    imageUrl: imageUrl || "https://placehold.co/280x280/111827/F9FAFB?text=Product",
+    price: price || undefined,
+    url: buyUrl || "#",
+    kind,
+  };
+}
+
+function normalizeProductField(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function getProductSignature(product: Product): string {
+  return [
+    normalizeProductField(product.name),
+    normalizeProductField(product.url),
+    normalizeProductField(product.imageUrl),
+  ].join("|");
+}
+
+function getUniqueProducts(products: Product[]): Product[] {
+  const seen = new Set<string>();
+  const unique: Product[] = [];
+  for (const product of products) {
+    const signature = getProductSignature(product);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    unique.push(product);
+  }
+  return unique;
+}
+
+function mergeProductHistory(
+  existing: Product[],
+  incoming: Product | null,
+  kind: Product["kind"],
+): Product[] {
+  if (!incoming) {
+    return getUniqueProducts(existing).slice(0, PANEL_HISTORY_LIMIT);
+  }
+
+  const normalizedIncoming: Product = { ...incoming, kind };
+  const merged = [normalizedIncoming, ...existing.map((item) => ({ ...item, kind }))];
+  return getUniqueProducts(merged).slice(0, PANEL_HISTORY_LIMIT);
+}
+
+function pickBestRecommendedProduct(
+  currentRaw: DwellApiProduct | undefined,
+  picksRaw: DwellApiProduct[],
+): Product | null {
+  if (currentRaw) {
+    return toPanelProduct(currentRaw, "recommended", 0);
+  }
+
+  const firstPick = picksRaw[0];
+  return firstPick ? toPanelProduct(firstPick, "recommended", 1) : null;
+}
+
+function pickBestCuratedProduct(
+  picksRaw: DwellApiProduct[],
+  excludedSignatures: Set<string>,
+): Product | null {
+  for (let index = 0; index < picksRaw.length; index += 1) {
+    const candidate = toPanelProduct(picksRaw[index], "all", index);
+    if (!candidate) continue;
+    const signature = getProductSignature(candidate);
+    if (excludedSignatures.has(signature)) continue;
+    return candidate;
+  }
+  return null;
+}
+
+function updatePanelFromDwellResponse(payload: unknown): void {
+  if (!payload || typeof payload !== "object") {
+    console.warn("[iTrack] dwell response is not an object; panel not updated");
+    return;
+  }
+
+  const response = payload as DwellApiResponse;
+  const currentRaw =
+    response.current_product && typeof response.current_product === "object"
+      ? (response.current_product as DwellApiProduct)
+      : undefined;
+  const picksRaw = Array.isArray(response.taste_picks)
+    ? response.taste_picks.filter(
+        (item): item is DwellApiProduct => Boolean(item && typeof item === "object"),
+      )
+    : [];
+
+  const recommendedCandidate = pickBestRecommendedProduct(currentRaw, picksRaw);
+  const excludedSignatures = new Set<string>();
+  if (recommendedCandidate) {
+    excludedSignatures.add(getProductSignature(recommendedCandidate));
+  }
+  const curatedCandidate = pickBestCuratedProduct(picksRaw, excludedSignatures);
+
+  const recommended = mergeProductHistory(panelData.recommended, recommendedCandidate, "recommended");
+  const all = mergeProductHistory(panelData.all, curatedCandidate, "all");
+
+  if (!recommended.length && !all.length) {
+    console.warn("[iTrack] dwell response did not include usable products");
+    return;
+  }
+
+  window.dispatchEvent(
+    new CustomEvent<{ recommended: Product[]; all: Product[] }>("itrack-products", {
+      detail: { recommended, all },
+    }),
+  );
+}
 
 function setUploadStatus(text: string): void {
   const statusEl = document.getElementById("itrack-upload-status");
@@ -1349,25 +1561,9 @@ async function handleImageFile(file: File): Promise<boolean> {
   setUploadStatus("Sending...");
   try {
     const parsed = await processImageForDwell(file);
+    updatePanelFromDwellResponse(parsed);
     console.log("[iTrack] dwell workflow response", format(parsed));
     setUploadStatus(`Success ${new Date().toLocaleTimeString()}`);
-
-    // Update Recommended panel with live Cat2 picks + confidence bars
-    const response = parsed as {
-      taste_picks?: BackendProduct[];
-      profile_snapshot?: { profile_confidence?: number; session_dwell_count?: number };
-    } | null;
-    if (response?.taste_picks && Array.isArray(response.taste_picks)) {
-      updateRecommendedTiles(response.taste_picks);
-    }
-    if (response?.profile_snapshot) {
-      const { profile_confidence, session_dwell_count } = response.profile_snapshot;
-      if (typeof profile_confidence === "number") {
-        const pct = Math.round(profile_confidence * 100);
-        setUploadStatus(`Captured · profile ${pct}% (${session_dwell_count ?? 0} dwells this session)`);
-      }
-    }
-
     return true;
   } catch (error) {
     console.error("[iTrack] dwell workflow error", format({ error: String(error) }));
@@ -1408,3 +1604,4 @@ window.addEventListener("itrack-process-image", ((e: CustomEvent<{ file?: File }
   }
   void handleImageFile(file);
 }) as EventListener);
+
