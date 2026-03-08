@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 
 import { settings } from "../config/settings.js";
-import { DwellEventSchema } from "../models/schemas.js";
+import { DwellEventSchema, SkipEventSchema } from "../models/schemas.js";
 import type { ProductCandidate } from "../models/schemas.js";
 import * as backboardService from "../services/backboardService.js";
 import * as cloudinaryService from "../services/cloudinaryService.js";
@@ -16,30 +16,31 @@ const dwellRoutes: FastifyPluginAsync = async (fastify) => {
       `[Pipeline] Received dwell: user=${event.user_id} duration=${event.dwell_duration_ms}`,
     );
 
-    fastify.log.info("[Pipeline] Fetching current profile for Cat2 input");
-    const currentProfile = await backboardService.getProfile(event.user_id);
-    const preGeminiQuery = sourcingService.composeQueryFromProfile(currentProfile);
+    fastify.log.info("[Pipeline] Fetching current profile + session for Cat2 input");
+    const currentProfile = await backboardService.getStoredProfile(event.user_id);
+    const currentSession = backboardService.getSession(event.user_id);
+    const preGeminiQuery = sourcingService.composeQueryFromProfile(currentProfile, currentSession);
     fastify.log.info(
       {
         userId: event.user_id,
         preGeminiQuery,
-        profileSeed: {
-          preferred_styles: currentProfile.preferred_styles,
-          preferred_colors: currentProfile.preferred_colors,
-          recent_interests: currentProfile.recent_interests,
-          preferred_brands: currentProfile.preferred_brands,
-          price_range: currentProfile.price_range,
-        },
+        topStyles: Object.entries(currentProfile.persistent.preferred_styles)
+          .sort(([, a], [, b]) => b - a)
+          .slice(0, 3),
+        sessionDwellCount: currentSession.dwell_count,
+        sessionRejections: currentSession.session_rejections,
       },
       "[Pipeline] Cat2 pre-Gemini query context",
     );
 
     fastify.log.info("[Pipeline] Running Cat1, Cat2, and Gemini concurrently");
     const cat1Task = sourcingService.sourceCat1(event.screenshot_b64, event.screenshot_url);
-    const cat2Task = sourcingService.sourceCat2(currentProfile).catch((error: unknown) => {
-      fastify.log.warn({ err: error }, "[Pipeline] Cat2 sourcing failed, using empty picks");
-      return [];
-    });
+    const cat2Task = sourcingService.sourceCat2(currentProfile, currentSession).catch(
+      (error: unknown) => {
+        fastify.log.warn({ err: error }, "[Pipeline] Cat2 sourcing failed, using empty picks");
+        return [] as ProductCandidate[];
+      },
+    );
     const geminiTask =
       settings.PRODUCT_SOURCING_MODE === "hardcoded"
         ? Promise.resolve()
@@ -61,16 +62,6 @@ const dwellRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(502).send({ message: "Cat1 sourcing failed" });
     }
 
-    fastify.log.info(
-      {
-        userId: event.user_id,
-        current_product_source: cat1Product.source,
-        taste_picks_sources: cat2Picks.map((pick) => pick.source),
-        hardcoded_taste_pick_count: cat2Picks.filter((pick) => pick.source === "hardcoded").length,
-      },
-      "[Pipeline] Sourcing source summary",
-    );
-
     fastify.log.info("[Pipeline] Transforming product images in parallel");
     const allProducts = [cat1Product, ...cat2Picks];
     const urls = await Promise.all(
@@ -81,24 +72,59 @@ const dwellRoutes: FastifyPluginAsync = async (fastify) => {
     });
 
     fastify.log.info("[Pipeline] Re-fetching profile after Gemini update");
-    const updatedProfile = await backboardService.getProfile(event.user_id);
-    const postGeminiQuery = sourcingService.composeQueryFromProfile(updatedProfile);
-    fastify.log.info(
-      {
-        userId: event.user_id,
-        postGeminiQuery,
-      },
-      "[Pipeline] Cat2 post-Gemini query context",
-    );
+    const updatedProfile = await backboardService.getStoredProfile(event.user_id);
+    const updatedSession = backboardService.getSession(event.user_id);
+    const postGeminiQuery = sourcingService.composeQueryFromProfile(updatedProfile, updatedSession);
+    fastify.log.info({ userId: event.user_id, postGeminiQuery }, "[Pipeline] Cat2 post-Gemini query context");
+
+    const persistent = updatedProfile.persistent;
+    const topStyles = Object.entries(persistent.preferred_styles)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([label, score]) => ({ label, score }));
+    const topColors = Object.entries(persistent.preferred_colors)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([label, score]) => ({ label, score }));
+    const rejectedStyles = Object.entries(persistent.rejected_styles)
+      .filter(([, score]) => score > 0.3)
+      .map(([label]) => label);
+    const priceRange =
+      persistent.price_confidence > 0.3
+        ? `$${Math.round(persistent.price_min)}-${Math.round(persistent.price_max)}`
+        : "building...";
 
     return {
       current_product: cat1Product,
       taste_picks: cat2Picks,
       profile_snapshot: {
-        ...updatedProfile,
+        top_styles: topStyles,
+        top_colors: topColors,
+        rejected_styles: rejectedStyles,
+        price_range: priceRange,
         dwell_count: backboardService.getDwellCount(event.user_id),
+        session_dwell_count: updatedSession.dwell_count,
+        profile_confidence: backboardService.getProfileConfidence(updatedProfile),
       },
     };
+  });
+
+  // Record a skip event (product viewed < SKIP_THRESHOLD_MS in panel)
+  fastify.post("/skip", async (request, reply) => {
+    const event = SkipEventSchema.parse(request.body);
+
+    fastify.log.info(
+      `[Skip] user=${event.user_id} product="${event.product_name}" viewport_ms=${event.viewport_time_ms}`,
+    );
+
+    try {
+      await backboardService.recordSkip(event.user_id, event);
+    } catch (error) {
+      fastify.log.warn({ err: error }, "[Skip] recordSkip failed");
+      return reply.code(500).send({ message: "Skip recording failed" });
+    }
+
+    return { ok: true };
   });
 };
 

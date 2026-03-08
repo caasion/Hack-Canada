@@ -1,6 +1,7 @@
 import { settings } from "../config/settings.js";
-import type { ProductCandidate, TasteProfile } from "../models/schemas.js";
-import type { GeminiSignals } from "./backboardService.js";
+import type { ProductCandidate, StoredProfile } from "../models/schemas.js";
+import type { SessionState } from "../services/backboardService.js";
+import { getProfileConfidence } from "../services/backboardService.js";
 import { uploadScreenshotForLens } from "./cloudinaryService.js";
 import { getJson } from "serpapi";
 
@@ -55,74 +56,131 @@ const HARDCODED_CATALOG: CatalogEntry[] = [
   },
 ];
 
-export const composeQueryFromProfile = (profile: TasteProfile): string => {
-  const parts = [
-    profile.preferred_styles[0],
-    profile.preferred_colors[0],
-    profile.recent_interests[0],
-    profile.preferred_brands[0],
-    profile.price_range,
-  ]
-    .map((value) => value?.trim())
-    .filter((value): value is string => Boolean(value && value.toLowerCase() !== "unknown"));
+// Blend persistent confidence scores with session signals.
+// Session signals get sessionWeight multiplier since they reflect current intent.
+const blendSignals = (
+  persistent: Record<string, number>,
+  sessionLabels: string[],
+  sessionWeight: number = 2.0,
+): Array<{ label: string; score: number }> => {
+  const scores = new Map<string, number>(Object.entries(persistent));
 
-  return parts.join(" ");
+  if (sessionLabels.length > 0) {
+    const sessionTotal = sessionLabels.length;
+    const sessionCount = new Map<string, number>();
+    for (const label of sessionLabels) {
+      sessionCount.set(label, (sessionCount.get(label) ?? 0) + 1);
+    }
+    for (const [label, count] of sessionCount.entries()) {
+      const boost = (count / sessionTotal) * sessionWeight;
+      scores.set(label, (scores.get(label) ?? 0) + boost);
+    }
+  }
+
+  return Array.from(scores.entries())
+    .map(([label, score]) => ({ label, score }))
+    .sort((a, b) => b.score - a.score);
 };
+
+export const composeQueryFromProfile = (
+  profile: StoredProfile,
+  session: SessionState,
+): string => {
+  const recentDwells = session.recent_dwells.slice(-5);
+  const sessionStyles = recentDwells.flatMap((d) => d.style_signals);
+  const sessionColors = recentDwells.flatMap((d) => d.color_signals);
+
+  const blendedStyles = blendSignals(profile.persistent.preferred_styles, sessionStyles);
+  const blendedColors = blendSignals(profile.persistent.preferred_colors, sessionColors);
+
+  const topStyle = blendedStyles[0]?.label;
+  const topColor = blendedColors[0]?.label;
+
+  // Top brand from persistent only (session doesn't override brand preference)
+  const topBrand = Object.entries(profile.persistent.preferred_brands).sort(
+    ([, a], [, b]) => b - a,
+  )[0]?.[0];
+
+  // Price range only when we have reasonable confidence
+  const priceRange =
+    profile.persistent.price_confidence > 0.3
+      ? `$${Math.round(profile.persistent.price_min)}-${Math.round(profile.persistent.price_max)}`
+      : "";
+
+  // Exclusion operators (-label) for styles/brands above the rejection threshold
+  const REJECT_THRESHOLD = 0.4;
+  const rejectedStyles = Object.entries(profile.persistent.rejected_styles)
+    .filter(([, score]) => score > REJECT_THRESHOLD)
+    .map(([label]) => `-${label}`);
+
+  const rejectedBrands = Object.entries(profile.persistent.rejected_brands)
+    .filter(([, score]) => score > REJECT_THRESHOLD)
+    .map(([label]) => `-${label}`);
+
+  const sessionRejections = session.session_rejections.map((r) => `-${r}`);
+
+  const positives = [topStyle, topColor, topBrand, priceRange].filter(
+    (p): p is string => Boolean(p && p.toLowerCase() !== "unknown"),
+  );
+  const exclusions = [...new Set([...rejectedStyles, ...rejectedBrands, ...sessionRejections])];
+
+  return [...positives, ...exclusions].join(" ");
+};
+
+// Simple scoring for hardcoded catalog (no weights needed)
+interface SimpleSignals {
+  style_signals?: string[];
+  color_signals?: string[];
+  brand_guess?: string;
+  product_category?: string;
+}
 
 export const scoreCandidate = (
   candidate: { tags?: string[] },
-  signals: Partial<GeminiSignals>,
+  signals: SimpleSignals,
 ): number => {
   let score = 0;
   const tags = new Set((candidate.tags ?? []).map((tag) => tag.toLowerCase()));
 
   for (const signal of [...(signals.style_signals ?? []), ...(signals.color_signals ?? [])]) {
-    if (tags.has(signal.toLowerCase())) {
-      score += 1;
-    }
+    if (tags.has(signal.toLowerCase())) score += 1;
   }
 
   const brand = signals.brand_guess?.toLowerCase();
-  if (brand && tags.has(brand)) {
-    score += 3;
-  }
+  if (brand && tags.has(brand)) score += 3;
 
   const category = signals.product_category?.toLowerCase();
-  if (category && [...tags].some((tag) => tag.includes(category))) {
-    score += 2;
-  }
+  if (category && [...tags].some((tag) => tag.includes(category))) score += 2;
 
   return score;
 };
 
+const profileToSimpleSignals = (profile: StoredProfile): SimpleSignals => ({
+  style_signals: Object.keys(profile.persistent.preferred_styles).slice(0, 5),
+  color_signals: Object.keys(profile.persistent.preferred_colors).slice(0, 5),
+  brand_guess: Object.entries(profile.persistent.preferred_brands).sort(
+    ([, a], [, b]) => b - a,
+  )[0]?.[0],
+});
+
 const toProduct = (
   candidate: CatalogEntry,
   source: ProductCandidate["source"],
-): ProductCandidate => ({
-  name: candidate.name,
-  price: candidate.price,
-  image_url: candidate.image_url,
-  buy_url: candidate.buy_url,
-  source,
-});
-
-const profileAsSignals = (profile: TasteProfile): Partial<GeminiSignals> => ({
-  style_signals: profile.preferred_styles,
-  color_signals: profile.preferred_colors,
-  brand_guess: profile.preferred_brands[0],
-  product_category: profile.recent_interests[0],
-  estimated_price_range: profile.price_range,
-});
-
-export const sourceViaHardcoded = async (
-  signals?: Partial<GeminiSignals>,
-): Promise<ProductCandidate[]> => {
-  const scored = HARDCODED_CATALOG.map((candidate) => ({
-    candidate,
-    score: scoreCandidate(candidate, signals ?? {}),
-  })).sort((a, b) => b.score - a.score);
-
-  return scored.slice(0, 5).map(({ candidate }) => toProduct(candidate, "hardcoded"));
+  confidence?: number,
+): ProductCandidate => {
+  // Infer brand from tags (first tag that starts with an uppercase letter)
+  const brand = candidate.tags.find((tag) => /^[A-Z]/.test(tag));
+  const style_signals = candidate.tags.filter((t) => t !== brand);
+  return {
+    name: candidate.name,
+    price: candidate.price,
+    image_url: candidate.image_url,
+    buy_url: candidate.buy_url,
+    source,
+    confidence,
+    style_signals,
+    brand,
+  };
 };
 
 export const sourceCat1 = async (
@@ -200,34 +258,36 @@ export const sourceCat1 = async (
   return toProduct(HARDCODED_CATALOG[0], "hardcoded");
 };
 
-export const sourceCat2 = async (profile: TasteProfile): Promise<ProductCandidate[]> => {
-  const query = composeQueryFromProfile(profile);
+export const sourceCat2 = async (
+  profile: StoredProfile,
+  session: SessionState,
+): Promise<ProductCandidate[]> => {
+  const query = composeQueryFromProfile(profile, session);
+  const baseConfidence = getProfileConfidence(profile);
+  const signals = profileToSimpleSignals(profile);
+  const topStyles = signals.style_signals ?? [];
+  const topBrand = signals.brand_guess;
 
   if (settings.PRODUCT_SOURCING_MODE === "hardcoded") {
     console.info("[Sourcing][Cat2] Hardcoded mode enabled; returning catalog fallback picks");
     const scored = HARDCODED_CATALOG.map((candidate) => ({
       candidate,
-      score: scoreCandidate(candidate, profileAsSignals(profile)),
+      score: scoreCandidate(candidate, signals),
     })).sort((a, b) => b.score - a.score);
-    return scored.slice(0, 3).map(({ candidate }) => toProduct(candidate, "hardcoded"));
+    return scored.slice(0, 3).map(({ candidate }, i) =>
+      toProduct(candidate, "hardcoded", baseConfidence * (1 - 0.05 * i)),
+    );
   }
 
   if (!query) {
-    console.warn(
-      "[Sourcing][Cat2] Empty query from profile; returning hardcoded fallback picks",
-      {
-        preferred_styles: profile.preferred_styles,
-        preferred_colors: profile.preferred_colors,
-        recent_interests: profile.recent_interests,
-        preferred_brands: profile.preferred_brands,
-        price_range: profile.price_range,
-      },
-    );
+    console.warn("[Sourcing][Cat2] Empty query from profile; returning hardcoded fallback picks");
     const scored = HARDCODED_CATALOG.map((candidate) => ({
       candidate,
-      score: scoreCandidate(candidate, profileAsSignals(profile)),
+      score: scoreCandidate(candidate, signals),
     })).sort((a, b) => b.score - a.score);
-    return scored.slice(0, 3).map(({ candidate }) => toProduct(candidate, "hardcoded"));
+    return scored.slice(0, 3).map(({ candidate }, i) =>
+      toProduct(candidate, "hardcoded", baseConfidence * (1 - 0.05 * i)),
+    );
   }
 
   console.info(`[Sourcing][Cat2] Live shopping query: ${query}`);
@@ -246,7 +306,7 @@ export const sourceCat2 = async (profile: TasteProfile): Promise<ProductCandidat
       fallbackReason = "serpapi_error_response";
       console.warn(`[Sourcing][Cat2] SerpAPI Shopping returned error: ${data.error}; falling back`);
     } else {
-      const picks = (data.shopping_results ?? []).slice(0, 5).map((item) => ({
+      const picks = (data.shopping_results ?? []).slice(0, 5).map((item, i) => ({
         name: typeof item.title === "string" ? item.title : "Unknown Product",
         price: typeof item.price === "string" ? item.price : "See site",
         image_url: typeof item.thumbnail === "string" ? item.thumbnail : "",
@@ -257,6 +317,9 @@ export const sourceCat2 = async (profile: TasteProfile): Promise<ProductCandidat
               ? item.link
               : "#",
         source: "serpapi_shopping" as const,
+        confidence: baseConfidence * (1 - 0.05 * i),
+        style_signals: topStyles,
+        brand: topBrand,
       }));
 
       if (picks.length > 0) {
@@ -280,7 +343,9 @@ export const sourceCat2 = async (profile: TasteProfile): Promise<ProductCandidat
   console.warn(`[Sourcing][Cat2] Returning hardcoded fallback picks (reason=${fallbackReason})`);
   const scored = HARDCODED_CATALOG.map((candidate) => ({
     candidate,
-    score: scoreCandidate(candidate, profileAsSignals(profile)),
+    score: scoreCandidate(candidate, signals),
   })).sort((a, b) => b.score - a.score);
-  return scored.slice(0, 3).map(({ candidate }) => toProduct(candidate, "hardcoded"));
+  return scored.slice(0, 3).map(({ candidate }, i) =>
+    toProduct(candidate, "hardcoded", baseConfidence * (1 - 0.05 * i)),
+  );
 };

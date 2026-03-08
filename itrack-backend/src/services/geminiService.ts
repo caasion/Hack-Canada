@@ -12,13 +12,20 @@ const MODEL_CANDIDATES = [
 
 let selectedModelName: string | undefined;
 
+const WeightedSignalSchema = z.object({
+  label: z.string(),
+  strength: z.number().min(0).max(1).default(0.7),
+});
+
 const GeminiSignalsSchema = z.object({
   product_name: z.string(),
   product_category: z.string(),
-  style_signals: z.array(z.string()),
-  color_signals: z.array(z.string()),
-  estimated_price_range: z.string(),
+  style_signals: z.array(WeightedSignalSchema),
+  color_signals: z.array(WeightedSignalSchema),
+  price_min: z.number().default(-1),
+  price_max: z.number().default(-1),
   brand_guess: z.string(),
+  brand_strength: z.number().min(0).max(1).default(0.7),
 });
 
 const FALLBACK_SIGNALS: GeminiSignals = {
@@ -26,8 +33,10 @@ const FALLBACK_SIGNALS: GeminiSignals = {
   product_category: "unknown",
   style_signals: [],
   color_signals: [],
-  estimated_price_range: "unknown",
+  estimated_price_min: -1,
+  estimated_price_max: -1,
   brand_guess: "unknown",
+  brand_strength: 0,
 };
 
 const IDENTIFY_PROMPT = `You are a shopping assistant analyzing a screenshot from social media (Instagram or TikTok).
@@ -45,16 +54,22 @@ Do NOT identify:
 - Abstract moods, activities, or settings
 - The background or non-product elements
 
-For style_signals and color_signals, extract short clean adjectives that describe the product's aesthetic (e.g. "minimalist", "matte black", "retro"). Do NOT include parenthetical explanations like "(frother)" or "(drink)" — just the adjective itself.
+For style_signals and color_signals, return objects with a "label" (short clean adjective, e.g. "minimalist", "retro") and a "strength" from 0.0-1.0 based on how clearly the product expresses that attribute. Do NOT include parenthetical explanations in labels.
+
+For price_min and price_max, give your best estimate of the product's price range in USD as integers. Use -1 if unknown.
+
+For brand_strength, rate 0.0-1.0 how confident you are in the brand identification.
 
 Respond ONLY with valid JSON, no markdown, no explanation:
 {
   "product_name": string,
   "product_category": string,
-  "style_signals": string[],
-  "color_signals": string[],
-  "estimated_price_range": string,
-  "brand_guess": string
+  "style_signals": [{"label": string, "strength": number}],
+  "color_signals": [{"label": string, "strength": number}],
+  "price_min": number,
+  "price_max": number,
+  "brand_guess": string,
+  "brand_strength": number
 }
 Page URL: {pageUrl}
 Page title: {pageTitle}`;
@@ -161,12 +176,20 @@ export const identifyAndUpdate = async (
     const raw = GeminiSignalsSchema.parse(parsedJson);
 
     // Strip parenthetical qualifiers like "Black (frother)" → "Black"
-    // These leak context words into profile tags and ruin catalog matching.
-    const cleanSignal = (s: string) => s.replace(/\s*\([^)]*\)/g, "").trim();
+    const cleanLabel = (s: string) => s.replace(/\s*\([^)]*\)/g, "").trim();
     signals = {
-      ...raw,
-      style_signals: raw.style_signals.map(cleanSignal).filter(Boolean),
-      color_signals: raw.color_signals.map(cleanSignal).filter(Boolean),
+      product_name: raw.product_name,
+      product_category: raw.product_category,
+      estimated_price_min: raw.price_min,
+      estimated_price_max: raw.price_max,
+      brand_guess: raw.brand_guess,
+      brand_strength: raw.brand_strength,
+      style_signals: raw.style_signals
+        .map((s) => ({ ...s, label: cleanLabel(s.label) }))
+        .filter((s) => s.label),
+      color_signals: raw.color_signals
+        .map((s) => ({ ...s, label: cleanLabel(s.label) }))
+        .filter((s) => s.label),
     };
     console.log("[Gemini] Parsed signals:", JSON.stringify(signals));
   } catch (error) {

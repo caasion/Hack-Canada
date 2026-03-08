@@ -1,53 +1,144 @@
 import { settings } from "../config/settings.js";
-import { TasteProfileSchema } from "../models/schemas.js";
-import type { TasteProfile } from "../models/schemas.js";
+import {
+  PersistentProfileSchema,
+  ObservationCountsSchema,
+  StoredProfileSchema,
+} from "../models/schemas.js";
+import type { StoredProfile, SkipEvent } from "../models/schemas.js";
 
-const profileCache = new Map<string, TasteProfile>();
-const dwellCounts = new Map<string, number>();
+// ---- Exported interfaces ----
+
+export interface WeightedSignal {
+  label: string;
+  strength: number; // 0.0 – 1.0
+}
 
 export interface GeminiSignals {
   product_name: string;
   product_category: string;
-  style_signals: string[];
-  color_signals: string[];
-  estimated_price_range: string;
+  style_signals: WeightedSignal[];
+  color_signals: WeightedSignal[];
+  estimated_price_min: number; // -1 = unknown
+  estimated_price_max: number; // -1 = unknown
   brand_guess: string;
+  brand_strength: number; // 0.0 – 1.0
 }
 
-const mergeList = (existing: string[], incoming: string[], limit: number = 10): string[] => {
-  const combined = [...incoming, ...existing];
-  const seen = new Set<string>();
-  const result: string[] = [];
+export interface SessionDwell {
+  product_name: string;
+  style_signals: string[];
+  color_signals: string[];
+  brand?: string;
+  timestamp: string;
+}
 
-  for (const item of combined) {
-    if (!item) {
-      continue;
-    }
-    if (item.toLowerCase() === "unknown") {
-      continue;
-    }
-    if (!seen.has(item)) {
-      seen.add(item);
-      result.push(item);
-    }
-    if (result.length >= limit) {
-      break;
-    }
-  }
+export interface SessionState {
+  started_at: string;
+  last_active_at: string;
+  recent_dwells: SessionDwell[];
+  session_rejections: string[];
+  dwell_count: number;
+}
 
-  return result;
-};
+// ---- Constants ----
+
+const POSITIVE_INCREMENT = 0.3;
+const SKIP_INCREMENT = 0.15;
+const SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
+const SESSION_MAX_DWELLS = 20;
+
+// ---- In-memory state ----
+
+const storedProfileCache = new Map<string, StoredProfile>();
+const sessionCache = new Map<string, SessionState>();
+const dwellCounts = new Map<string, number>();
+
+// ---- Helpers ----
 
 const authHeaders = (): HeadersInit => ({
   Authorization: `Bearer ${settings.BACKBOARD_API_KEY}`,
   "Content-Type": "application/json",
 });
 
-export const getProfile = async (userId: string): Promise<TasteProfile> => {
-  const cached = profileCache.get(userId);
-  if (cached) {
-    return cached;
+// Bayesian running average: dampens new signals as observations accumulate
+const updateConfidence = (
+  existingScore: number,
+  newStrength: number,
+  nObs: number,
+): number => (existingScore * nObs + newStrength) / (nObs + 1);
+
+const makeDefaultProfile = (): StoredProfile => ({
+  persistent: PersistentProfileSchema.parse({
+    preferred_styles: { minimalist: 0.5, streetwear: 0.3 },
+    preferred_colors: { black: 0.5, white: 0.3 },
+  }),
+  observations: ObservationCountsSchema.parse({}),
+});
+
+// ---- Session management ----
+
+export const getOrInitSession = (userId: string): SessionState => {
+  const existing = sessionCache.get(userId);
+  const now = new Date().toISOString();
+
+  if (existing) {
+    const lastActive = new Date(existing.last_active_at).getTime();
+    if (Date.now() - lastActive < SESSION_TIMEOUT_MS) {
+      existing.last_active_at = now;
+      return existing;
+    }
+    // Session expired — fall through to create fresh
   }
+
+  const fresh: SessionState = {
+    started_at: now,
+    last_active_at: now,
+    recent_dwells: [],
+    session_rejections: [],
+    dwell_count: 0,
+  };
+  sessionCache.set(userId, fresh);
+  return fresh;
+};
+
+export const getSession = (userId: string): SessionState => getOrInitSession(userId);
+
+// ---- Backboard fetch / store ----
+
+const migrateOldProfile = (old: Record<string, unknown>): StoredProfile => {
+  const styles: Record<string, number> = {};
+  const colors: Record<string, number> = {};
+  const brands: Record<string, number> = {};
+
+  if (Array.isArray(old.preferred_styles)) {
+    for (const s of old.preferred_styles as string[]) {
+      if (s) styles[s] = 0.5;
+    }
+  }
+  if (Array.isArray(old.preferred_colors)) {
+    for (const c of old.preferred_colors as string[]) {
+      if (c) colors[c] = 0.5;
+    }
+  }
+  if (Array.isArray(old.preferred_brands)) {
+    for (const b of old.preferred_brands as string[]) {
+      if (b) brands[b] = 0.5;
+    }
+  }
+
+  return {
+    persistent: PersistentProfileSchema.parse({
+      preferred_styles: styles,
+      preferred_colors: colors,
+      preferred_brands: brands,
+    }),
+    observations: ObservationCountsSchema.parse({}),
+  };
+};
+
+export const getStoredProfile = async (userId: string): Promise<StoredProfile> => {
+  const cached = storedProfileCache.get(userId);
+  if (cached) return cached;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -55,68 +146,47 @@ export const getProfile = async (userId: string): Promise<TasteProfile> => {
   try {
     const response = await fetch(
       `${settings.BACKBOARD_BASE_URL}/memory/itrack:profile:${userId}`,
-      {
-        method: "GET",
-        headers: authHeaders(),
-        signal: controller.signal,
-      },
+      { method: "GET", headers: authHeaders(), signal: controller.signal },
     );
 
     if (response.status === 200) {
       const data: unknown = await response.json();
-      const value =
+      const raw =
         typeof data === "object" && data !== null && "value" in data
           ? (data as { value: unknown }).value
           : data;
-      const parsed = TasteProfileSchema.parse(value);
-      profileCache.set(userId, parsed);
-      return parsed;
+
+      // Attempt new StoredProfile format
+      const parsed = StoredProfileSchema.safeParse(raw);
+      if (parsed.success) {
+        storedProfileCache.set(userId, parsed.data);
+        return parsed.data;
+      }
+
+      // Attempt migration from old TasteProfile format (preferred_styles: string[])
+      const maybeOld = raw as Record<string, unknown> | null;
+      if (maybeOld && Array.isArray(maybeOld.preferred_styles)) {
+        const migrated = migrateOldProfile(maybeOld);
+        storedProfileCache.set(userId, migrated);
+        return migrated;
+      }
     }
   } catch {
-    // Fall back to empty profile below.
+    // Network failure — fall through to defaults
   } finally {
     clearTimeout(timeout);
   }
 
-  const empty = TasteProfileSchema.parse({
-    preferred_styles: ["minimalist", "streetwear"],
-    preferred_colors: ["black", "white"],
-    recent_interests: ["sneakers", "outerwear"],
-    preferred_brands: [],
-    price_range: "$50-$200",
-  });
-  profileCache.set(userId, empty);
+  const empty = makeDefaultProfile();
+  storedProfileCache.set(userId, empty);
   return empty;
 };
 
-export const updateProfile = async (
-  userId: string,
-  signals: GeminiSignals,
-): Promise<TasteProfile> => {
-  const current = await getProfile(userId);
+// Legacy alias used by other modules that imported getProfile
+export const getProfile = getStoredProfile;
 
-  const merged: TasteProfile = {
-    ...current,
-    preferred_styles: mergeList(current.preferred_styles, signals.style_signals, 10),
-    preferred_colors: mergeList(current.preferred_colors, signals.color_signals, 10),
-    preferred_brands: current.preferred_brands,
-    recent_interests: current.recent_interests,
-  };
-
-  const brand = signals.brand_guess;
-  if (brand && brand.toLowerCase() !== "unknown" && !merged.preferred_brands.includes(brand)) {
-    merged.preferred_brands = [brand, ...merged.preferred_brands].slice(0, 10);
-  }
-
-  const priceRange = signals.estimated_price_range;
-  if (priceRange && priceRange.toLowerCase() !== "unknown") {
-    merged.price_range = priceRange;
-  }
-
-  const category = signals.product_category;
-  if (category) {
-    merged.recent_interests = mergeList(merged.recent_interests, [category], 5);
-  }
+const persistProfile = async (userId: string, profile: StoredProfile): Promise<void> => {
+  storedProfileCache.set(userId, profile);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -124,7 +194,7 @@ export const updateProfile = async (
     await fetch(`${settings.BACKBOARD_BASE_URL}/memory/itrack:profile:${userId}`, {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify(merged),
+      body: JSON.stringify(profile),
       signal: controller.signal,
     });
   } catch (error) {
@@ -137,26 +207,173 @@ export const updateProfile = async (
     if (isNetworkError) {
       const code = (error as { cause: { code: string } }).cause.code;
       console.warn(
-        `[Backboard] Cannot reach ${settings.BACKBOARD_BASE_URL} (${code}) — profile saved in-memory only. Check BACKBOARD_BASE_URL in your .env.`,
+        `[Backboard] Cannot reach ${settings.BACKBOARD_BASE_URL} (${code}) — profile saved in-memory only.`,
       );
     } else {
-      console.warn("[Backboard] updateProfile write failed", error);
+      console.warn("[Backboard] persistProfile write failed", error);
     }
   } finally {
     clearTimeout(timeout);
   }
+};
 
-  profileCache.set(userId, merged);
+// ---- Confidence-weighted profile update from dwell ----
+
+export const updateProfile = async (
+  userId: string,
+  signals: GeminiSignals,
+): Promise<StoredProfile> => {
+  const current = await getStoredProfile(userId);
+  const p = current.persistent;
+  const obs = current.observations;
+
+  // Styles
+  const updatedStyles = { ...p.preferred_styles };
+  const stylesObs = { ...obs.styles };
+  for (const { label, strength } of signals.style_signals) {
+    if (!label || label.toLowerCase() === "unknown") continue;
+    const n = stylesObs[label] ?? 0;
+    updatedStyles[label] = updateConfidence(
+      updatedStyles[label] ?? 0,
+      strength * POSITIVE_INCREMENT,
+      n,
+    );
+    stylesObs[label] = n + 1;
+  }
+
+  // Colors
+  const updatedColors = { ...p.preferred_colors };
+  const colorsObs = { ...obs.colors };
+  for (const { label, strength } of signals.color_signals) {
+    if (!label || label.toLowerCase() === "unknown") continue;
+    const n = colorsObs[label] ?? 0;
+    updatedColors[label] = updateConfidence(
+      updatedColors[label] ?? 0,
+      strength * POSITIVE_INCREMENT,
+      n,
+    );
+    colorsObs[label] = n + 1;
+  }
+
+  // Brand
+  const updatedBrands = { ...p.preferred_brands };
+  const brandsObs = { ...obs.brands };
+  if (signals.brand_guess && signals.brand_guess.toLowerCase() !== "unknown") {
+    const brand = signals.brand_guess;
+    const n = brandsObs[brand] ?? 0;
+    updatedBrands[brand] = updateConfidence(
+      updatedBrands[brand] ?? 0,
+      signals.brand_strength * POSITIVE_INCREMENT,
+      n,
+    );
+    brandsObs[brand] = n + 1;
+  }
+
+  // Price range (running average)
+  let { price_min, price_max, price_confidence } = p;
+  const priceCount = obs.price_count;
+  if (signals.estimated_price_min >= 0 && signals.estimated_price_max >= 0) {
+    price_min = (price_min * priceCount + signals.estimated_price_min) / (priceCount + 1);
+    price_max = (price_max * priceCount + signals.estimated_price_max) / (priceCount + 1);
+    price_confidence = updateConfidence(price_confidence, 0.8, priceCount);
+  }
+
+  const merged: StoredProfile = {
+    persistent: {
+      ...p,
+      preferred_styles: updatedStyles,
+      preferred_colors: updatedColors,
+      preferred_brands: updatedBrands,
+      price_min,
+      price_max,
+      price_confidence,
+    },
+    observations: {
+      ...obs,
+      styles: stylesObs,
+      colors: colorsObs,
+      brands: brandsObs,
+      price_count: signals.estimated_price_min >= 0 ? priceCount + 1 : priceCount,
+    },
+  };
+
+  await persistProfile(userId, merged);
+
+  // Record in session
+  const session = getOrInitSession(userId);
+  session.dwell_count += 1;
+  session.recent_dwells.push({
+    product_name: signals.product_name,
+    style_signals: signals.style_signals.map((s) => s.label),
+    color_signals: signals.color_signals.map((c) => c.label),
+    brand: signals.brand_guess !== "unknown" ? signals.brand_guess : undefined,
+    timestamp: new Date().toISOString(),
+  });
+  if (session.recent_dwells.length > SESSION_MAX_DWELLS) {
+    session.recent_dwells.splice(0, session.recent_dwells.length - SESSION_MAX_DWELLS);
+  }
   dwellCounts.set(userId, (dwellCounts.get(userId) ?? 0) + 1);
 
   return merged;
 };
 
-export const getDwellCount = (userId: string): number => {
-  return dwellCounts.get(userId) ?? 0;
+// ---- Skip signal recording ----
+
+export const recordSkip = async (userId: string, event: SkipEvent): Promise<void> => {
+  const current = await getStoredProfile(userId);
+  const p = current.persistent;
+  const obs = current.observations;
+
+  const updatedRejStyles = { ...p.rejected_styles };
+  const rejStylesObs = { ...obs.rejected_styles };
+  for (const label of event.style_signals) {
+    if (!label || label.toLowerCase() === "unknown") continue;
+    const n = rejStylesObs[label] ?? 0;
+    updatedRejStyles[label] = updateConfidence(updatedRejStyles[label] ?? 0, SKIP_INCREMENT, n);
+    rejStylesObs[label] = n + 1;
+  }
+
+  const updatedRejBrands = { ...p.rejected_brands };
+  const rejBrandsObs = { ...obs.rejected_brands };
+  if (event.brand && event.brand.toLowerCase() !== "unknown") {
+    const n = rejBrandsObs[event.brand] ?? 0;
+    updatedRejBrands[event.brand] = updateConfidence(
+      updatedRejBrands[event.brand] ?? 0,
+      SKIP_INCREMENT,
+      n,
+    );
+    rejBrandsObs[event.brand] = n + 1;
+  }
+
+  const merged: StoredProfile = {
+    persistent: { ...p, rejected_styles: updatedRejStyles, rejected_brands: updatedRejBrands },
+    observations: { ...obs, rejected_styles: rejStylesObs, rejected_brands: rejBrandsObs },
+  };
+
+  await persistProfile(userId, merged);
+
+  // Add to session rejections for query exclusion within this session
+  const session = getOrInitSession(userId);
+  for (const label of event.style_signals) {
+    if (!session.session_rejections.includes(label)) {
+      session.session_rejections.push(label);
+    }
+  }
 };
 
+// ---- Profile utilities ----
+
+export const getProfileConfidence = (profile: StoredProfile): number => {
+  const styleScores = Object.values(profile.persistent.preferred_styles);
+  if (styleScores.length === 0) return 0.1;
+  const top3 = [...styleScores].sort((a, b) => b - a).slice(0, 3);
+  return top3.reduce((sum, v) => sum + v, 0) / top3.length;
+};
+
+export const getDwellCount = (userId: string): number => dwellCounts.get(userId) ?? 0;
+
 export const clearProfile = (userId: string): void => {
-  profileCache.delete(userId);
+  storedProfileCache.delete(userId);
+  sessionCache.delete(userId);
   dwellCounts.delete(userId);
 };

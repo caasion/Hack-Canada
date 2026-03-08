@@ -1,21 +1,19 @@
 import type { FastifyPluginAsync } from "fastify";
 
-import type { ProfileResponse } from "../models/schemas.js";
 import * as backboardService from "../services/backboardService.js";
 
 const profileRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { userId: string } }>("/:userId", async (request) => {
     const { userId } = request.params;
-    const profile = await backboardService.getProfile(userId);
-    const dwellEventCount = backboardService.getDwellCount(userId);
+    const profile = await backboardService.getStoredProfile(userId);
+    const session = backboardService.getSession(userId);
 
-    const response: ProfileResponse = {
+    return {
       user_id: userId,
       profile,
-      dwell_event_count: dwellEventCount,
+      dwell_event_count: backboardService.getDwellCount(userId),
+      session_dwell_count: session.dwell_count,
     };
-
-    return response;
   });
 
   fastify.delete<{ Params: { userId: string } }>("/:userId", async (request) => {
