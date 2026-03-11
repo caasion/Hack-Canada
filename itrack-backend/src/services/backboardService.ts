@@ -38,6 +38,7 @@ export interface SessionState {
   recent_dwells: SessionDwell[];
   session_rejections: string[];
   dwell_count: number;
+  seen_product_names: Set<string>;
 }
 
 // ---- Constants ----
@@ -303,6 +304,7 @@ export const getOrInitSession = (userId: string): SessionState => {
     recent_dwells: [],
     session_rejections: [],
     dwell_count: 0,
+    seen_product_names: new Set(),
   };
   sessionCache.set(userId, fresh);
   logBackboardInfo("Session initialized", {

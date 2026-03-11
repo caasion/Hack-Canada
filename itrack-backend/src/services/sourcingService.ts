@@ -5,6 +5,59 @@ import { getProfileConfidence } from "../services/backboardService.js";
 import { uploadScreenshotForLens } from "./cloudinaryService.js";
 import { getJson } from "serpapi";
 
+// Only allow links to known ecommerce/retail domains. Falls back to "#" for
+// anything that looks like a content site (Reddit, Pinterest, YouTube, etc.).
+const ECOMMERCE_DOMAINS = [
+  "amazon.",
+  "ebay.",
+  "etsy.",
+  "walmart.",
+  "target.",
+  "bestbuy.",
+  "shopify.",
+  "myshopify.",
+  "nike.",
+  "adidas.",
+  "zara.",
+  "hm.",
+  "uniqlo.",
+  "nordstrom.",
+  "macys.",
+  "gap.",
+  "asos.",
+  "farfetch.",
+  "net-a-porter.",
+  "ssense.",
+  "lululemon.",
+  "patagonia.",
+  "drmartens.",
+  "vans.",
+  "converse.",
+  "newbalance.",
+  "reebok.",
+  "puma.",
+  "underarmour.",
+  "levi.",
+  "forever21.",
+  "urbanoutfitters.",
+  "anthropologie.",
+  "freepeople.",
+  "revolve.",
+  "zaful.",
+  "shein.",
+  "shop.",
+];
+
+const toEcommerceUrl = (url: unknown): string => {
+  if (typeof url !== "string" || !url.startsWith("http")) return "#";
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return ECOMMERCE_DOMAINS.some((domain) => hostname.includes(domain)) ? url : "#";
+  } catch {
+    return "#";
+  }
+};
+
 type CatalogEntry = {
   name: string;
   price: string;
@@ -234,7 +287,7 @@ export const sourceCat1 = async (
               ? (top.price as { value: string }).value
               : "See site",
           image_url: typeof top.thumbnail === "string" ? top.thumbnail : "",
-          buy_url: typeof top.link === "string" ? top.link : "#",
+          buy_url: toEcommerceUrl(top.link),
           source: "serpapi_lens",
         };
       }
@@ -298,12 +351,9 @@ export const sourceCat2 = async (
         name: typeof item.title === "string" ? item.title : "Unknown Product",
         price: typeof item.price === "string" ? item.price : "See site",
         image_url: typeof item.thumbnail === "string" ? item.thumbnail : "",
-        buy_url:
-          typeof item.product_link === "string"
-            ? item.product_link
-            : typeof item.link === "string"
-              ? item.link
-              : "#",
+        buy_url: toEcommerceUrl(
+          typeof item.product_link === "string" ? item.product_link : item.link,
+        ),
         source: "serpapi_shopping" as const,
         confidence: baseConfidence * (1 - 0.05 * i),
         style_signals: topStyles,
