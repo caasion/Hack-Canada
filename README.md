@@ -1,133 +1,99 @@
-# Hack-Canada (Frontend Extension Repo)
 
-This repository contains the Firefox extension frontend for iTrack.
+# Glimpse
 
-Current active implementation:
-- `itrack-extension` (main extension code)
+Every second, millions of dollars of purchase intent just disappears... Let’s be real, how many times have you scrolled on Instagram, seen a cool jacket, but just scrolled past it because you weren’t bothered to leave the app? Glimpse solves this by building the proper infrastructure to go from 📱 scrolling -> 🛍️ shopping 
 
-Legacy folders (not part of current production flow):
-- `eye-tracking`
-- `cloudinary`
-- `serpapi`
+# 👀 How it works:
+- Glimpse tracks your eye movements while your scrolling
+- If you look at a product for 2+ seconds, Glimpse captures an image of the frame and sends it to backend
+- Image is normalized by Cloudinary and sent to Gemini + SerpApi to identify product and retrieve relevant purchase links
+- Links sent to frontend so users can shop directly in Instagram Reels 
 
-The backend API runs from a separate repository:
-- `D:\Repositories\Hackathons\itrack-backend` (Windows example path)
+🧠 Glimpse is also able to learn your preferences through Backboard.io. Each time a user likes a product, Backboard records attributes such as color, style, and brand. Over time, this data allows Glimpse to generate personalized product recommendations based on the user’s evolving tastes.
 
-## What This Repo Does
+## Tech Stack
 
-The extension injects a right-side product panel into Instagram, runs gaze tracking in an embedded page, and sends screenshot data to the backend `/dwell` pipeline.
+- **Backend**: Node.js, TypeScript, Fastify, Gemini AI, SerpApi, Cloudinary, Zod
+- **Frontend Extension**: TypeScript, JavaScript, Firefox WebExtension APIs
+- **Panel App**: React, Vite, Tailwind CSS, Framer Motion
 
-The extension supports:
-- Manual upload (`Upload image` button in Dev mode)
-- Auto-capture (400x400 anchored screenshot window, 2s dwell)
-- Gaze modes (`Calibrate`, `Dev`, `Normal`)
+---
 
-## Prerequisites
+## Getting Started
+
+### Prerequisites
 
 - Node.js 18+ (Node 20+ recommended)
 - npm
-- Firefox (temporary extension loading via `about:debugging`)
-- iTrack backend running (default: `http://127.0.0.1:8000`)
+- Firefox (for extension loading via `about:debugging`)
 
-No Python virtual environment is required for the current extension flow.
+---
 
-## Setup (Windows)
+## 1. Backend Setup
 
-```powershell
-cd D:\Repositories\Hackathons\Hack-Canada\itrack-extension
+Clone this repository and set up the backend:
+
+```bash
+cd itrack-backend
+npm install
+cp .env.example .env
+# Edit .env and fill in required API keys (Gemini, Backboard, SerpApi, Cloudinary)
+npm run dev
+```
+
+Check the backend is running:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+---
+
+## 2. Extension Setup
+
+Build the extension:
+
+```bash
+cd itrack-extension
 npm install
 npm run build
 ```
 
-Optional development watch mode:
+Load the extension in Firefox:
+1. Open `about:debugging` in Firefox.
+2. Click "This Firefox" > "Load Temporary Add-on..."
+3. Select the `manifest.json` file in the `itrack-extension` folder.
 
-```powershell
-npm run watch
-```
+---
 
-Load extension in Firefox:
-1. Open `about:debugging#/runtime/this-firefox`
-2. Click `Load Temporary Add-on...`
-3. Select: `D:\Repositories\Hackathons\Hack-Canada\itrack-extension\manifest.json`
+## 3. Panel App (Optional: Dev Mode)
 
-## Setup (macOS)
+To develop the panel UI separately:
 
 ```bash
-cd ~/Repositories/Hackathons/Hack-Canada/itrack-extension
+cd itrack-extension/panel-app
 npm install
-npm run build
+npm run dev
 ```
 
-Optional development watch mode:
+---
 
-```bash
-npm run watch
-```
+## Usage
 
-Load extension in Firefox:
-1. Open `about:debugging#/runtime/this-firefox`
-2. Click `Load Temporary Add-on...`
-3. Select: `~/Repositories/Hackathons/Hack-Canada/itrack-extension/manifest.json`
+- Browse Instagram with the extension loaded.
+- When you dwell on a product, the extension captures a screenshot and sends it to the backend.
+- The panel displays real-time recommendations based on your gaze and profile.
 
-## Run With Backend
-
-1. Start the backend repo first (`itrack-backend`) on `127.0.0.1:8000`.
-2. Build and load this extension.
-3. Open Instagram:
-   - `https://www.instagram.com/?hl=en`
-4. Open the iTrack panel.
-5. Use modes:
-   - `Calibrate`: calibration overlay, sidebar sections hidden
-   - `Dev`: debug mode; upload and auto-capture controls visible
-   - `Normal`: runtime tracking mode; debug controls hidden
-
-## Upload Workflow (Manual)
-
-When you choose a file in `Upload image`, the extension does:
-1. Resolve runtime config:
-   - first from `window.ITRACK_RUNTIME_CONFIG` if present
-   - fallback from backend `GET /runtime/client-config`
-2. If Cloudinary direct upload is available:
-   - upload file directly to Cloudinary from browser
-   - fetch Cloudinary `secure_url`
-   - convert that image back to base64 for `/dwell`
-3. If Cloudinary direct upload is not available:
-   - convert local file directly to base64
-4. Send payload to backend `POST /dwell`:
-   - `screenshot_b64`
-   - optional `screenshot_url` and `screenshot_public_id`
-   - page metadata and dwell metadata
-
-## Auto-Capture Workflow
-
-In Dev mode, auto-capture can trigger the same pipeline as manual upload:
-1. Anchor a 400x400 box at current gaze point.
-2. Hold for 2 seconds.
-3. If gaze remains inside anchor box for the window:
-   - capture viewport screenshot via background script (`tabs.captureVisibleTab`)
-   - crop anchored 400x400 region in canvas
-   - build a `File`
-   - call the same image upload handler used by manual upload
-4. If gaze leaves anchor box before window ends:
-   - skip capture for that cycle
-
-## Key Files
-
-- `itrack-extension/content.ts`: main extension logic (UI, modes, upload flow, auto-capture)
-- `itrack-extension/background.js`: privileged APIs (`captureVisibleTab`, proxy fetch bridge)
-- `itrack-extension/gaze-page.html`: extension page hosting gaze runtime
-- `itrack-extension/gaze.js`: gaze relay script posting samples to content script
-- `itrack-extension/manifest.json`: Firefox extension manifest
+---
 
 ## Troubleshooting
 
-- Extension icon is greyed out:
-  - Expected if no toolbar popup is defined.
-  - The extension runs as a content script on matching Instagram pages.
-- Nothing hits backend on upload:
-  - Confirm backend is running on `http://127.0.0.1:8000`
-  - Check browser console for `[iTrack] sending /dwell`
-  - Reload temporary extension after rebuild (`npm run build`)
-- Cloudinary direct upload not used:
-  - Backend must expose Cloudinary client config via `/runtime/client-config`
-  - Missing/disabled config causes local base64 fallback automatically
+- Ensure all required API keys are set in `.env` for the backend.
+- The backend must be running before using the extension.
+- For live product sourcing, set `PRODUCT_SOURCING_MODE=serpapi` in your `.env`.
+
+---
+
+## License
+
+MIT
